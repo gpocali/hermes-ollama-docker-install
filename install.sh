@@ -85,18 +85,25 @@ echo "Pulling Gemma 4 model ($DEFAULT_GEMMA_MODEL)..."
 ollama pull "$DEFAULT_GEMMA_MODEL"
 
 echo "===> [5/7] Deploying/Updating Hermes Agent environment..."
-if ! command -v hermes &> /dev/null; then
-    echo "Installing Hermes Agent via pipx..."
-    pipx ensurepath
-    pipx install hermes-agent || pipx install git+https://github.com/NousResearch/hermes-agent.git
-else
-    echo "Hermes Agent already installed. Updating package..."
-    pipx upgrade hermes-agent || true
-fi
-
 export HERMES_CONFIG_DIR="$HERMES_HOME/config"
 mkdir -p "$HERMES_CONFIG_DIR"
 
+if ! command -v hermes &> /dev/null; then
+    echo "Installing Hermes Agent via official installer..."
+    # Run the official installer non-interactively
+    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+    
+    # Ensure global binary link for root/system scope if installed locally
+    if [[ -f "$HOME/.local/bin/hermes" ]] && [[ ! -f "/usr/local/bin/hermes" ]]; then
+        ln -s "$HOME/.local/bin/hermes" /usr/local/bin/hermes
+    elif [[ -f "$STORAGE_ROOT/.local/bin/hermes" ]] && [[ ! -f "/usr/local/bin/hermes" ]]; then
+        ln -s "$STORAGE_ROOT/.local/bin/hermes" /usr/local/bin/hermes
+    fi
+else
+    echo "Hermes Agent already present. Refreshing runtime config..."
+fi
+
+# Write default configuration pre-wiring local Ollama backend & Gemma 4 model
 cat <<EOF > "$HERMES_CONFIG_DIR/config.yaml"
 version: "1.0"
 backend: local
@@ -104,7 +111,7 @@ ollama:
   base_url: "http://127.0.0.1:$OLLAMA_PORT"
   default_model: "$DEFAULT_GEMMA_MODEL"
 terminal:
-  backend: docker
+  backend: docker  # Enforces isolated container runtime environments for work areas
 workspaces:
   root_dir: "$STORAGE_ROOT/workspaces"
 api_server:
