@@ -9,10 +9,9 @@ STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
 DOCKER_DATA_DIR="${STORAGE_ROOT}/docker"
-DEFAULT_GEMMA_MODEL="gemma3:latest" # Updates to latest available Gemma model variant
+DEFAULT_GEMMA_MODEL="gemma4:12b" # Upgraded to Gemma 4 12B variant optimized for VRAM & long context
 OLLAMA_PORT=11434
 HERMES_API_PORT=8642
-LAN_INTERFACE_DEFAULT="0.0.0.0"
 
 echo "===> [1/7] Verifying system privileges and OS environment..."
 if [[ $EUID -ne 0 ]]; then
@@ -20,7 +19,6 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Ensure Ubuntu 24.04/26.04+ environment structure check
 if ! grep -qEi "ubuntu" /etc/os-release; then
     echo "Warning: This script is optimized for Ubuntu Desktop Linux."
 fi
@@ -30,19 +28,17 @@ if [[ ! -d "$STORAGE_ROOT" ]]; then
     mkdir -p "$STORAGE_ROOT"
 fi
 
-# Check if /storage is already a mountpoint. If a separate partition exists, ensure fstab config persistence.
 if ! mountpoint -q "$STORAGE_ROOT"; then
     echo "Notice: $STORAGE_ROOT is currently a standard directory on the system drive."
     echo "To map a separate partition, ensure it is formatted and add its UUID to /etc/fstab targeting $STORAGE_ROOT."
 fi
 
-# Create internal storage directory layout
 mkdir -p "$HERMES_HOME" "$OLLAMA_MODELS_DIR" "$DOCKER_DATA_DIR"
 
-echo "===> [3/7] Ensuring dependencies (Docker, curl, ufw, jq)..."
+echo "===> [3/7] Ensuring dependencies (Docker, curl, ufw, jq, pipx)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl wget git jq ufw apt-transport-https ca-certificates gnupg lsb-release
+apt-get install -y curl wget git jq ufw apt-transport-https ca-certificates gnupg lsb-release pipx
 
 # Install Docker Engine if missing
 if ! command -v docker &> /dev/null; then
@@ -52,7 +48,7 @@ if ! command -v docker &> /dev/null; then
     chmod a+r /etc/apt/keyrings/docker.gpg
 
     echo \
-      "deb [arch=$(dpkg --arch) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
       $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
     
     apt-get update -y
@@ -61,7 +57,6 @@ fi
 systemctl enable --now docker
 
 echo "===> [4/7] Setting up Local Ollama Backend ( bound to /storage )..."
-# Stop local ollama service if running natively to avoid conflict, or configure systemd override for storage path
 if systemctl is-active --quiet ollama; then
     systemctl stop ollama
 fi
@@ -71,7 +66,6 @@ if ! command -v ollama &> /dev/null; then
     curl -fsSL https://ollama.com/install.sh | sh
 fi
 
-# Configure Ollama systemd override to store models on /storage and listen on LAN
 mkdir -p /etc/systemd/system/ollama.service.d
 cat <<EOF > /etc/systemd/system/ollama.service.d/override.service
 [Service]
@@ -87,14 +81,12 @@ until curl -s "http://127.0.0.1:$OLLAMA_PORT/api/tags" > /dev/null 2>&1; do
     sleep 2
 done
 
-echo "Pulling latest Gemma model ($DEFAULT_GEMMA_MODEL)..."
+echo "Pulling Gemma 4 model ($DEFAULT_GEMMA_MODEL)..."
 ollama pull "$DEFAULT_GEMMA_MODEL"
 
 echo "===> [5/7] Deploying/Updating Hermes Agent environment..."
-# Check if Hermes is already installed via pipx or source
 if ! command -v hermes &> /dev/null; then
-    echo "Installing Python pipx and Hermes Agent..."
-    apt-get install -y python3-pip python3-pipx
+    echo "Installing Hermes Agent via pipx..."
     pipx ensurepath
     pipx install hermes-agent || pipx install git+https://github.com/NousResearch/hermes-agent.git
 else
@@ -102,11 +94,9 @@ else
     pipx upgrade hermes-agent || true
 fi
 
-# Configure Hermes runtime data paths to map inside /storage
 export HERMES_CONFIG_DIR="$HERMES_HOME/config"
 mkdir -p "$HERMES_CONFIG_DIR"
 
-# Write default configuration pre-wiring local Ollama backend & latest Gemma model
 cat <<EOF > "$HERMES_CONFIG_DIR/config.yaml"
 version: "1.0"
 backend: local
@@ -114,7 +104,7 @@ ollama:
   base_url: "http://127.0.0.1:$OLLAMA_PORT"
   default_model: "$DEFAULT_GEMMA_MODEL"
 terminal:
-  backend: docker  # Enforces isolated container runtime environments for work areas
+  backend: docker
 workspaces:
   root_dir: "$STORAGE_ROOT/workspaces"
 api_server:
@@ -124,14 +114,12 @@ api_server:
 EOF
 
 echo "===> [6/7] Configuring Firewall Ports & System Boot Daemons..."
-# Open ports for LAN access (Ollama API: 11434, Hermes API Gateway: 8642)
 if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
     ufw allow "$OLLAMA_PORT/tcp" comment "Ollama Local LLM Backend"
     ufw allow "$HERMES_API_PORT/tcp" comment "Hermes Agent API Gateway"
     ufw reload
 fi
 
-# Create a systemd service wrapper for Hermes Gateway/API Server to start on boot
 cat <<EOF > /etc/systemd/system/hermes-agent.service
 [Unit]
 Description=Hermes Agent API Gateway & Automation Service
