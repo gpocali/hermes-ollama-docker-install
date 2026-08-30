@@ -83,7 +83,7 @@ systemctl daemon-reload
 systemctl enable --now ollama
 
 echo "Waiting for Ollama service to become responsive..."
-until curl -s "http://127.0.0.1:$OLLAMA_PORT/api/tags" > /dev/null; +> /dev/null 2>&1
+until curl -s "http://127.0.0.1:$OLLAMA_PORT/api/tags" > /dev/null 2>&1; do
     sleep 2
 done
 
