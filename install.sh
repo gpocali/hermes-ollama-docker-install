@@ -9,7 +9,7 @@ STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
 DOCKER_DATA_DIR="${STORAGE_ROOT}/docker"
-DEFAULT_GEMMA_MODEL="gemma4:12b" # Upgraded to Gemma 4 12B variant optimized for VRAM & long context
+DEFAULT_GEMMA_MODEL="gemma4:12b" # Gemma 4 12B variant optimized for VRAM & long context
 OLLAMA_PORT=11434
 HERMES_API_PORT=8642
 
@@ -56,6 +56,11 @@ if ! command -v docker &> /dev/null; then
 fi
 systemctl enable --now docker
 
+# Ensure current invoking user is added to the docker group if run via sudo
+if [[ -n "${SUDO_USER:-}" ]]; then
+    usermod -aG docker "$SUDO_USER"
+fi
+
 echo "===> [4/7] Setting up Local Ollama Backend ( bound to /storage )..."
 if systemctl is-active --quiet ollama; then
     systemctl stop ollama
@@ -90,10 +95,8 @@ mkdir -p "$HERMES_CONFIG_DIR"
 
 if ! command -v hermes &> /dev/null; then
     echo "Installing Hermes Agent via official installer..."
-    # Run the official installer non-interactively
     curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
     
-    # Ensure global binary link for root/system scope if installed locally
     if [[ -f "$HOME/.local/bin/hermes" ]] && [[ ! -f "/usr/local/bin/hermes" ]]; then
         ln -s "$HOME/.local/bin/hermes" /usr/local/bin/hermes
     elif [[ -f "$STORAGE_ROOT/.local/bin/hermes" ]] && [[ ! -f "/usr/local/bin/hermes" ]]; then
@@ -103,7 +106,6 @@ else
     echo "Hermes Agent already present. Refreshing runtime config..."
 fi
 
-# Write default configuration pre-wiring local Ollama backend & Gemma 4 model
 cat <<EOF > "$HERMES_CONFIG_DIR/config.yaml"
 version: "1.0"
 backend: local
