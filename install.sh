@@ -12,7 +12,7 @@ DOCKER_DATA_DIR="${STORAGE_ROOT}/docker"
 DEFAULT_GEMMA_MODEL="gemma4:12b"
 OLLAMA_PORT=11434
 HERMES_API_PORT=8642
-ENABLE_HTTPS_PROXY="${ENABLE_HTTPS_PROXY:-false}" # Set to true to automatically setup Nginx + SSL
+ENABLE_HTTPS_PROXY="${ENABLE_HTTPS_PROXY:-true}" # Enabled by default for enhanced security
 SSL_CERT_DIR="/etc/nginx/ssl"
 
 echo "===> [1/7] Verifying system privileges and OS environment..."
@@ -139,7 +139,6 @@ if [[ "$ENABLE_HTTPS_PROXY" == "true" ]]; then
     echo "Configuring Nginx HTTPS Reverse Proxy with SSL Certificates..."
     mkdir -p "$SSL_CERT_DIR"
     
-    # Generate self-signed certificate if none exist
     if [[ ! -f "$SSL_CERT_DIR/hermes.crt" ]] || [[ ! -f "$SSL_CERT_DIR/hermes.key" ]]; then
         openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
             -keyout "$SSL_CERT_DIR/hermes.key" \
