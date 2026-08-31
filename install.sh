@@ -137,11 +137,10 @@ api_server:
   api_key: "$HERMES_API_TOKEN"
 EOF
 
-echo "===> [6/7] Configuring Dedicated SSH User & Post-Quantum Key Exchange..."
+echo "===> [6/7] Configuring Dedicated SSH User & Standard Secure Key Pair..."
 if ! id "$SSH_USER" &>/dev/null; then
     useradd -m -d "$SSH_USER_HOME" -s /bin/bash "$SSH_USER"
 else
-    # Only modify home directory if it differs to prevent harmless warning logs
     if [[ "$(getent passwd "$SSH_USER" | cut -d: -f6)" != "$SSH_USER_HOME" ]]; then
         usermod -d "$SSH_USER_HOME" "$SSH_USER"
     fi
@@ -155,7 +154,7 @@ SERVER_KEY_PRIV="$SSH_DIR/id_ed25519_hermes"
 SERVER_KEY_PUB="$SSH_DIR/id_ed25519_hermes.pub"
 
 if [[ ! -f "$SERVER_KEY_PRIV" ]]; then
-    ssh-keygen -t ed25519 -a 100 -N "" -f "$SERVER_KEY_PRIV" -C "hermes-secure-remote"
+    ssh-keygen -t ed25519 -N "" -f "$SERVER_KEY_PRIV" -C "hermes-secure-remote"
     cat "$SERVER_KEY_PUB" >> "$SSH_DIR/authorized_keys"
 fi
 
@@ -166,16 +165,12 @@ ln -sfn "$HERMES_HOME" "$SSH_USER_HOME/hermes_data"
 ln -sfn "$STORAGE_ROOT/workspaces" "$SSH_USER_HOME/workspaces"
 chown -h "$SSH_USER:$SSH_USER" "$SSH_USER_HOME/hermes_data" "$SSH_USER_HOME/workspaces"
 
-# Force Post-Quantum Hybrid Key Exchange algorithms in OpenSSH daemon config
-mkdir -p /etc/ssh/sshd_config.d
-cat <<EOF > /etc/ssh/sshd_config.d/post-quantum.conf
-# Enforce hybrid post-quantum key exchange algorithms for quantum-safe wire encryption
-KexAlgorithms mlkem768x25519-sha256,sntrup761x25519-sha512@openssh.com,sntrup761x25519-sha512
-EOF
+# Remove any custom experimental overrides to ensure total client compatibility
+rm -f /etc/ssh/sshd_config.d/post-quantum.conf
 systemctl restart ssh
 
 if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-    ufw allow 22/tcp comment "SSH Post-Quantum Secure Access"
+    ufw allow 22/tcp comment "SSH Secure Access"
     ufw delete allow 443/tcp 2>/dev/null || true
     ufw delete allow "$HERMES_API_PORT/tcp" 2>/dev/null || true
     ufw reload
@@ -211,13 +206,12 @@ echo " Token File Path    : $ENV_FILE"
 echo " Dedicated SSH User : $SSH_USER"
 echo " SSH Home / Vault   : $SSH_USER_HOME"
 echo " Client Private Key : $SERVER_KEY_PRIV"
-echo " Encryption Standard: Hybrid Post-Quantum KEX Enabled"
 echo "--------------------------------------------------------"
 echo " To connect securely from your remote client machine:"
 echo " 1. Copy the private key file content from:"
 echo "    $SERVER_KEY_PRIV"
 echo "    onto your remote client (save as ~/.ssh/hermes_key and run chmod 600 ~/.ssh/hermes_key)"
-echo " 2. Establish a secure quantum-safe local port forwarding tunnel via:"
+echo " 2. Establish a secure local port forwarding tunnel via:"
 echo "    ssh -i ~/.ssh/hermes_key -L 8642:127.0.0.1:$HERMES_API_PORT $SSH_USER@<ubuntu-ip-address>"
 echo " 3. Access Hermes locally on your client at http://127.0.0.1:8642"
 echo "    using Bearer token authentication: $HERMES_API_TOKEN"
