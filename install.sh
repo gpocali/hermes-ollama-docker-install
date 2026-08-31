@@ -91,21 +91,9 @@ done
 echo "Pulling Gemma 4 model ($DEFAULT_GEMMA_MODEL)..."
 ollama pull "$DEFAULT_GEMMA_MODEL"
 
-echo "===> [5/7] Deploying/Updating Hermes Agent environment & API Token..."
+echo "===> [5/7] Deploying/Updating Hermes Agent environment..."
 export HERMES_CONFIG_DIR="$HERMES_HOME/config"
 mkdir -p "$HERMES_CONFIG_DIR"
-
-ENV_FILE="$STORAGE_ROOT/hermes/.env"
-if [[ ! -f "$ENV_FILE" ]]; then
-    HERMES_API_TOKEN="hermes_$(openssl rand -hex 24)"
-    echo "HERMES_API_TOKEN=$HERMES_API_TOKEN" > "$ENV_FILE"
-else
-    source "$ENV_FILE"
-    if [[ -z "${HERMES_API_TOKEN:-}" ]]; then
-        HERMES_API_TOKEN="hermes_$(openssl rand -hex 24)"
-        echo "HERMES_API_TOKEN=$HERMES_API_TOKEN" >> "$ENV_FILE"
-    fi
-fi
 
 if ! command -v hermes &> /dev/null; then
     echo "Installing Hermes Agent via official installer..."
@@ -121,6 +109,7 @@ else
 fi
 
 # Fully preconfigured config.yaml routing inference directly to local Ollama with /v1 endpoint suffix
+# API token omitted to support seamless native SSH profile client connections
 cat <<EOF > "$HERMES_CONFIG_DIR/config.yaml"
 version: "1.0"
 backend: local
@@ -142,7 +131,6 @@ api_server:
   enabled: true
   host: "127.0.0.1"
   port: $HERMES_API_PORT
-  api_key: "$HERMES_API_TOKEN"
 EOF
 
 echo "===> [6/7] Configuring Dedicated SSH User & Key Pair..."
@@ -211,17 +199,15 @@ SERVER_FQDN="$(hostname -f 2>/dev/null || hostname)"
 echo "===> [7/7] Installation and Update Complete Successfully!"
 echo "--------------------------------------------------------"
 echo " Storage Path Map   : $STORAGE_ROOT"
-echo " API Token (Save!)  : $HERMES_API_TOKEN"
-echo " Token File Path    : $ENV_FILE"
 echo " Dedicated SSH User : $SSH_USER"
 echo " Server Private Key : $SERVER_KEY_PRIV"
 echo "--------------------------------------------------------"
-echo " HOW TO CONNECT FROM A WINDOWS CLIENT:"
+echo " HOW TO CONNECT FROM A WINDOWS CLIENT (SSH Profile Mode):"
 echo " 1. Copy the private key content from the file above ($SERVER_KEY_PRIV)"
 echo "    and save it on your Windows machine at: C:\Users\<YourUser>\.ssh\id_ed25519_hermes"
 echo " 2. Fix the file permissions in PowerShell (Windows requires strict ownership):"
 echo "    icacls \"\$HOME\\.ssh\\id_ed25519_hermes\" /inheritance:r"
 echo "    icacls \"\$HOME\\.ssh\\id_ed25519_hermes\" /grant:r \"\$(\$env:USERNAME):R\""
 echo " 3. Configure your client profile using host: $SERVER_FQDN, user: $SSH_USER"
-echo "    with the private key and API token for authentication."
+echo "    pointing directly to your private key file with no token required."
 echo "--------------------------------------------------------"
