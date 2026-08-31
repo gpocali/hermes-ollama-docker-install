@@ -120,9 +120,17 @@ else
     echo "Hermes Agent already present. Refreshing runtime config..."
 fi
 
+# Fully preconfigured config.yaml routing inference directly to local Ollama & Gemma 4
 cat <<EOF > "$HERMES_CONFIG_DIR/config.yaml"
 version: "1.0"
 backend: local
+default_provider: ollama
+models:
+  default: "$DEFAULT_GEMMA_MODEL"
+  providers:
+    ollama:
+      base_url: "http://127.0.0.1:$OLLAMA_PORT"
+      model: "$DEFAULT_GEMMA_MODEL"
 ollama:
   base_url: "http://127.0.0.1:$OLLAMA_PORT"
   default_model: "$DEFAULT_GEMMA_MODEL"
@@ -195,7 +203,8 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now hermes-agent.service
+systemctl restart ollama
+systemctl restart hermes-agent.service
 
 SERVER_FQDN="$(hostname -f 2>/dev/null || hostname)"
 
@@ -206,21 +215,4 @@ echo " API Token (Save!)  : $HERMES_API_TOKEN"
 echo " Token File Path    : $ENV_FILE"
 echo " Dedicated SSH User : $SSH_USER"
 echo " Server Private Key : $SERVER_KEY_PRIV"
-echo "--------------------------------------------------------"
-echo " HOW TO CONNECT FROM A WINDOWS CLIENT:"
-echo " 1. Copy the private key content from the file above ($SERVER_KEY_PRIV)"
-echo "    and save it on your Windows machine at: C:\Users\<YourUser>\.ssh\id_ed25519_hermes"
-echo " 2. Fix the file permissions in PowerShell (Windows requires strict ownership):"
-echo "    icacls \"\$HOME\\.ssh\\id_ed25519_hermes\" /inheritance:r"
-echo "    icacls \"\$HOME\\.ssh\\id_ed25519_hermes\" /grant:r \"\$(\$env:USERNAME):R\""
-echo " 3. Add this entry to your Windows SSH config file (C:\Users\<YourUser>\.ssh\config):"
-echo "    Host hermes-server"
-echo "        HostName $SERVER_FQDN"
-echo "        User $SSH_USER"
-echo "        IdentityFile C:/Users/<YourUser>/.ssh/id_ed25519_hermes"
-echo "        IdentitiesOnly yes"
-echo " 4. Open a PowerShell terminal and start your secure local port-forwarding tunnel:"
-echo "    ssh -L 8642:127.0.0.1:$HERMES_API_PORT hermes-server"
-echo " 5. Access Hermes locally on your Windows client at http://127.0.0.1:8642"
-echo "    using Bearer token authentication: $HERMES_API_TOKEN"
 echo "--------------------------------------------------------"

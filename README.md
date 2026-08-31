@@ -50,7 +50,7 @@ icacls "$HOME\.ssh\id_ed25519_hermes" /grant:r "$($env:USERNAME):R"
 3. **Configure Your SSH Config:** Open or create your client config file at `C:\Users\<YourUsername>\.ssh\config` and add the following entry:
 ```ssh
 Host hermes-server
-    HostName computer-gfxdev01.27net.me
+    HostName <server hostname>
     User hermes-remote
     IdentityFile C:/Users/<YourUsername>/.ssh/id_ed25519_hermes
     IdentitiesOnly yes
