@@ -12,8 +12,10 @@ DOCKER_DATA_DIR="${STORAGE_ROOT}/docker"
 DEFAULT_GEMMA_MODEL="gemma4:12b"
 OLLAMA_PORT=11434
 HERMES_API_PORT=8642
-ENABLE_HTTPS_PROXY="${ENABLE_HTTPS_PROXY:-true}" # Enabled by default for enhanced security
-SSL_CERT_DIR="/etc/nginx/ssl"
+
+# SSH Tunnel / Secure Client User Configuration
+SSH_USER="hermes-remote"
+SSH_USER_HOME="/storage/hermes-remote"
 
 echo "===> [1/7] Verifying system privileges and OS environment..."
 if [[ $EUID -ne 0 ]]; then
@@ -37,10 +39,10 @@ fi
 
 mkdir -p "$HERMES_HOME" "$OLLAMA_MODELS_DIR" "$DOCKER_DATA_DIR"
 
-echo "===> [3/7] Ensuring dependencies (Docker, curl, ufw, jq, pipx, nginx)..."
+echo "===> [3/7] Ensuring dependencies (Docker, curl, ufw, jq, pipx, openssh-server)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl wget git jq ufw apt-transport-https ca-certificates gnupg lsb-release pipx nginx openssl
+apt-get install -y curl wget git jq ufw apt-transport-https ca-certificates gnupg lsb-release pipx openssh-server openssl
 
 if ! command -v docker &> /dev/null; then
     echo "Installing Docker Engine..."
@@ -89,7 +91,7 @@ done
 echo "Pulling Gemma 4 model ($DEFAULT_GEMMA_MODEL)..."
 ollama pull "$DEFAULT_GEMMA_MODEL"
 
-echo "===> [5/7] Deploying/Updating Hermes Agent environment & Generating API Token..."
+echo "===> [5/7] Deploying/Updating Hermes Agent environment & API Token..."
 export HERMES_CONFIG_DIR="$HERMES_HOME/config"
 mkdir -p "$HERMES_CONFIG_DIR"
 
@@ -135,50 +137,40 @@ api_server:
   api_key: "$HERMES_API_TOKEN"
 EOF
 
-if [[ "$ENABLE_HTTPS_PROXY" == "true" ]]; then
-    echo "Configuring Nginx HTTPS Reverse Proxy with SSL Certificates..."
-    mkdir -p "$SSL_CERT_DIR"
-    
-    if [[ ! -f "$SSL_CERT_DIR/hermes.crt" ]] || [[ ! -f "$SSL_CERT_DIR/hermes.key" ]]; then
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout "$SSL_CERT_DIR/hermes.key" \
-            -out "$SSL_CERT_DIR/hermes.crt" \
-            -subj "/C=US/ST=NewYork/L=NewYork/O=Hermes/CN=$(hostname)"
-    fi
-
-    cat <<EOF > /etc/nginx/sites-available/hermes-ssl
-server {
-    listen 443 ssl;
-    server_name _;
-
-    ssl_certificate $SSL_CERT_DIR/hermes.crt;
-    ssl_certificate_key $SSL_CERT_DIR/hermes.key;
-
-    location / {
-        proxy_pass http://127.0.0.1:$HERMES_API_PORT;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-}
-EOF
-    ln -sf /etc/nginx/sites-available/hermes-ssl /etc/nginx/sites-enabled/
-    rm -f /etc/nginx/sites-enabled/default
-    systemctl restart nginx
+echo "===> [6/7] Configuring Dedicated SSH Secure User & Key Pair..."
+# Create dedicated restricted system user pointing directly inside /storage
+if ! id "$SSH_USER" &>/dev/null; then
+    useradd -m -d "$SSH_USER_HOME" -s /bin/bash "$SSH_USER"
+else
+    usermod -d "$SSH_USER_HOME" "$SSH_USER"
 fi
 
-echo "===> [6/7] Configuring Firewall Ports & System Boot Daemons..."
+# Set up restricted SSH directory and authorized keys
+SSH_DIR="$SSH_USER_HOME/.ssh"
+mkdir -p "$SSH_DIR"
+chmod 700 "$SSH_DIR"
+
+SERVER_KEY_PRIV="$SSH_DIR/id_ed25519_hermes"
+SERVER_KEY_PUB="$SSH_DIR/id_ed25519_hermes.pub"
+
+if [[ ! -f "$SERVER_KEY_PRIV" ]]; then
+    ssh-keygen -t ed25519 -N "" -f "$SERVER_KEY_PRIV" -C "hermes-remote-access"
+    cat "$SERVER_KEY_PUB" >> "$SSH_DIR/authorized_keys"
+fi
+
+chmod 600 "$SSH_DIR/authorized_keys"
+chown -R "$SSH_USER:$SSH_USER" "$SSH_USER_HOME"
+
+# Symlink essential workspace and config views into the isolated user home for easy interaction
+ln -sfn "$HERMES_HOME" "$SSH_USER_HOME/hermes_data"
+ln -sfn "$STORAGE_ROOT/workspaces" "$SSH_USER_HOME/workspaces"
+chown -h "$SSH_USER:$SSH_USER" "$SSH_USER_HOME/hermes_data" "$SSH_USER_HOME/workspaces"
+
+# Configure Firewall to open SSH port only
 if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-    ufw allow 22/tcp comment "SSH"
-    if [[ "$ENABLE_HTTPS_PROXY" == "true" ]]; then
-        ufw allow 443/tcp comment "HTTPS Hermes Secure Gateway"
-    else
-        ufw allow "$HERMES_API_PORT/tcp" comment "Hermes Agent API Gateway"
-    fi
+    ufw allow 22/tcp comment "SSH Remote Secure Access"
+    ufw delete allow 443/tcp 2>/dev/null || true
+    ufw delete allow "$HERMES_API_PORT/tcp" 2>/dev/null || true
     ufw reload
 fi
 
@@ -206,14 +198,19 @@ systemctl enable --now hermes-agent.service
 
 echo "===> [7/7] Installation and Update Complete Successfully!"
 echo "--------------------------------------------------------"
-echo " Storage Path Map : $STORAGE_ROOT"
-echo " API Token (Save!): $HERMES_API_TOKEN"
-echo " Token File Path  : $ENV_FILE"
-echo " Hermes Gateway   : http://127.0.0.1:$HERMES_API_PORT (Secured via Token)"
-if [[ "$ENABLE_HTTPS_PROXY" == "true" ]]; then
-echo " HTTPS Proxy      : https://<your-ubuntu-ip>/"
-echo " SSL Certificate  : $SSL_CERT_DIR/hermes.crt"
-echo " SSL Private Key  : $SSL_CERT_DIR/hermes.key"
-echo "   (Replace certificate files above and run 'sudo systemctl restart nginx')"
-fi
+echo " Storage Path Map  : $STORAGE_ROOT"
+echo " API Token (Save!) : $HERMES_API_TOKEN"
+echo " Token File Path   : $ENV_FILE"
+echo " Dedicated SSH User: $SSH_USER"
+echo " SSH Home / Vault  : $SSH_USER_HOME"
+echo " Generated Priv Key: $SERVER_KEY_PRIV"
+echo "--------------------------------------------------------"
+echo " To connect securely from your remote client machine:"
+echo " 1. Copy the private key file content from:"
+echo "    $SERVER_KEY_PRIV"
+echo "    onto your remote client (save as ~/.ssh/hermes_id and run chmod 600)"
+echo " 2. Establish a secure local port forwarding tunnel via:"
+echo "    ssh -i ~/.ssh/hermes_id -L 8642:127.0.0.1:$HERMES_API_PORT $SSH_USER@<ubuntu-ip-address>"
+echo " 3. Access Hermes locally on your client at http://127.0.0.1:8642"
+echo "    using Bearer token authentication: $HERMES_API_TOKEN"
 echo "--------------------------------------------------------"
