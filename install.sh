@@ -120,7 +120,7 @@ else
     echo "Hermes Agent already present. Refreshing runtime config..."
 fi
 
-# Fully preconfigured config.yaml routing inference directly to local Ollama & Gemma 4
+# Fully preconfigured config.yaml routing inference directly to local Ollama with /v1 endpoint suffix
 cat <<EOF > "$HERMES_CONFIG_DIR/config.yaml"
 version: "1.0"
 backend: local
@@ -129,10 +129,10 @@ models:
   default: "$DEFAULT_GEMMA_MODEL"
   providers:
     ollama:
-      base_url: "http://127.0.0.1:$OLLAMA_PORT"
+      base_url: "http://127.0.0.1:$OLLAMA_PORT/v1"
       model: "$DEFAULT_GEMMA_MODEL"
 ollama:
-  base_url: "http://127.0.0.1:$OLLAMA_PORT"
+  base_url: "http://127.0.0.1:$OLLAMA_PORT/v1"
   default_model: "$DEFAULT_GEMMA_MODEL"
 terminal:
   backend: docker
@@ -222,14 +222,6 @@ echo "    and save it on your Windows machine at: C:\Users\<YourUser>\.ssh\id_ed
 echo " 2. Fix the file permissions in PowerShell (Windows requires strict ownership):"
 echo "    icacls \"\$HOME\\.ssh\\id_ed25519_hermes\" /inheritance:r"
 echo "    icacls \"\$HOME\\.ssh\\id_ed25519_hermes\" /grant:r \"\$(\$env:USERNAME):R\""
-echo " 3. Add this entry to your Windows SSH config file (C:\Users\<YourUser>\.ssh\config):"
-echo "    Host hermes-server"
-echo "        HostName $SERVER_FQDN"
-echo "        User $SSH_USER"
-echo "        IdentityFile C:/Users/<YourUser>/.ssh/id_ed25519_hermes"
-echo "        IdentitiesOnly yes"
-echo " 4. Open a PowerShell terminal and start your secure local port-forwarding tunnel:"
-echo "    ssh -L 8642:127.0.0.1:$HERMES_API_PORT hermes-server"
-echo " 5. Access Hermes locally on your Windows client at http://127.0.0.1:8642"
-echo "    using Bearer token authentication: $HERMES_API_TOKEN"
+echo " 3. Configure your client profile using host: $SERVER_FQDN, user: $SSH_USER"
+echo "    with the private key and API token for authentication."
 echo "--------------------------------------------------------"
