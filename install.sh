@@ -137,38 +137,35 @@ api_server:
   api_key: "$HERMES_API_TOKEN"
 EOF
 
-echo "===> [6/7] Configuring Dedicated SSH Secure User & Key Pair..."
-# Create dedicated restricted system user pointing directly inside /storage
+echo "===> [6/7] Configuring Dedicated SSH User & Post-Quantum Key Pair..."
 if ! id "$SSH_USER" &>/dev/null; then
     useradd -m -d "$SSH_USER_HOME" -s /bin/bash "$SSH_USER"
 else
     usermod -d "$SSH_USER_HOME" "$SSH_USER"
 fi
 
-# Set up restricted SSH directory and authorized keys
 SSH_DIR="$SSH_USER_HOME/.ssh"
 mkdir -p "$SSH_DIR"
 chmod 700 "$SSH_DIR"
 
-SERVER_KEY_PRIV="$SSH_DIR/id_ed25519_hermes"
-SERVER_KEY_PUB="$SSH_DIR/id_ed25519_hermes.pub"
+# Utilizing OpenSSH post-quantum hybrid algorithm (sntrup761x25519-sha512)
+SERVER_KEY_PRIV="$SSH_DIR/id_sntrup761_hermes"
+SERVER_KEY_PUB="$SSH_DIR/id_sntrup761_hermes.pub"
 
 if [[ ! -f "$SERVER_KEY_PRIV" ]]; then
-    ssh-keygen -t ed25519 -N "" -f "$SERVER_KEY_PRIV" -C "hermes-remote-access"
+    ssh-keygen -t sntrup761x25519 -N "" -f "$SERVER_KEY_PRIV" -C "hermes-post-quantum-remote"
     cat "$SERVER_KEY_PUB" >> "$SSH_DIR/authorized_keys"
 fi
 
 chmod 600 "$SSH_DIR/authorized_keys"
 chown -R "$SSH_USER:$SSH_USER" "$SSH_USER_HOME"
 
-# Symlink essential workspace and config views into the isolated user home for easy interaction
 ln -sfn "$HERMES_HOME" "$SSH_USER_HOME/hermes_data"
 ln -sfn "$STORAGE_ROOT/workspaces" "$SSH_USER_HOME/workspaces"
 chown -h "$SSH_USER:$SSH_USER" "$SSH_USER_HOME/hermes_data" "$SSH_USER_HOME/workspaces"
 
-# Configure Firewall to open SSH port only
 if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-    ufw allow 22/tcp comment "SSH Remote Secure Access"
+    ufw allow 22/tcp comment "SSH Post-Quantum Secure Access"
     ufw delete allow 443/tcp 2>/dev/null || true
     ufw delete allow "$HERMES_API_PORT/tcp" 2>/dev/null || true
     ufw reload
@@ -198,19 +195,19 @@ systemctl enable --now hermes-agent.service
 
 echo "===> [7/7] Installation and Update Complete Successfully!"
 echo "--------------------------------------------------------"
-echo " Storage Path Map  : $STORAGE_ROOT"
-echo " API Token (Save!) : $HERMES_API_TOKEN"
-echo " Token File Path   : $ENV_FILE"
-echo " Dedicated SSH User: $SSH_USER"
-echo " SSH Home / Vault  : $SSH_USER_HOME"
-echo " Generated Priv Key: $SERVER_KEY_PRIV"
+echo " Storage Path Map   : $STORAGE_ROOT"
+echo " API Token (Save!)  : $HERMES_API_TOKEN"
+echo " Token File Path    : $ENV_FILE"
+echo " Dedicated SSH User : $SSH_USER"
+echo " SSH Home / Vault   : $SSH_USER_HOME"
+echo " Post-Quantum Key   : $SERVER_KEY_PRIV (Type: sntrup761x25519)"
 echo "--------------------------------------------------------"
 echo " To connect securely from your remote client machine:"
 echo " 1. Copy the private key file content from:"
 echo "    $SERVER_KEY_PRIV"
-echo "    onto your remote client (save as ~/.ssh/hermes_id and run chmod 600)"
+echo "    onto your remote client (save as ~/.ssh/hermes_pq and run chmod 600)"
 echo " 2. Establish a secure local port forwarding tunnel via:"
-echo "    ssh -i ~/.ssh/hermes_id -L 8642:127.0.0.1:$HERMES_API_PORT $SSH_USER@<ubuntu-ip-address>"
+echo "    ssh -i ~/.ssh/hermes_pq -L 8642:127.0.0.1:$HERMES_API_PORT $SSH_USER@<ubuntu-ip-address>"
 echo " 3. Access Hermes locally on your client at http://127.0.0.1:8642"
 echo "    using Bearer token authentication: $HERMES_API_TOKEN"
 echo "--------------------------------------------------------"
