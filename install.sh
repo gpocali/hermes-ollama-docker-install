@@ -137,7 +137,7 @@ api_server:
   api_key: "$HERMES_API_TOKEN"
 EOF
 
-echo "===> [6/7] Configuring Dedicated SSH User & Standard Secure Key Pair..."
+echo "===> [6/7] Configuring Dedicated SSH User & Key Pair..."
 if ! id "$SSH_USER" &>/dev/null; then
     useradd -m -d "$SSH_USER_HOME" -s /bin/bash "$SSH_USER"
 else
@@ -165,7 +165,6 @@ ln -sfn "$HERMES_HOME" "$SSH_USER_HOME/hermes_data"
 ln -sfn "$STORAGE_ROOT/workspaces" "$SSH_USER_HOME/workspaces"
 chown -h "$SSH_USER:$SSH_USER" "$SSH_USER_HOME/hermes_data" "$SSH_USER_HOME/workspaces"
 
-# Remove any custom experimental overrides to ensure total client compatibility
 rm -f /etc/ssh/sshd_config.d/post-quantum.conf
 systemctl restart ssh
 
@@ -198,21 +197,30 @@ EOF
 systemctl daemon-reload
 systemctl enable --now hermes-agent.service
 
+SERVER_FQDN="$(hostname -f 2>/dev/null || hostname)"
+
 echo "===> [7/7] Installation and Update Complete Successfully!"
 echo "--------------------------------------------------------"
 echo " Storage Path Map   : $STORAGE_ROOT"
 echo " API Token (Save!)  : $HERMES_API_TOKEN"
 echo " Token File Path    : $ENV_FILE"
 echo " Dedicated SSH User : $SSH_USER"
-echo " SSH Home / Vault   : $SSH_USER_HOME"
-echo " Client Private Key : $SERVER_KEY_PRIV"
+echo " Server Private Key : $SERVER_KEY_PRIV"
 echo "--------------------------------------------------------"
-echo " To connect securely from your remote client machine:"
-echo " 1. Copy the private key file content from:"
-echo "    $SERVER_KEY_PRIV"
-echo "    onto your remote client (save as ~/.ssh/hermes_key and run chmod 600 ~/.ssh/hermes_key)"
-echo " 2. Establish a secure local port forwarding tunnel via:"
-echo "    ssh -i ~/.ssh/hermes_key -L 8642:127.0.0.1:$HERMES_API_PORT $SSH_USER@<ubuntu-ip-address>"
-echo " 3. Access Hermes locally on your client at http://127.0.0.1:8642"
+echo " HOW TO CONNECT FROM A WINDOWS CLIENT:"
+echo " 1. Copy the private key content from the file above ($SERVER_KEY_PRIV)"
+echo "    and save it on your Windows machine at: C:\Users\<YourUser>\.ssh\id_ed25519_hermes"
+echo " 2. Fix the file permissions in PowerShell (Windows requires strict ownership):"
+echo "    icacls \"\$HOME\\.ssh\\id_ed25519_hermes\" /inheritance:r"
+echo "    icacls \"\$HOME\\.ssh\\id_ed25519_hermes\" /grant:r \"\$(\$env:USERNAME):R\""
+echo " 3. Add this entry to your Windows SSH config file (C:\Users\<YourUser>\.ssh\config):"
+echo "    Host hermes-server"
+echo "        HostName $SERVER_FQDN"
+echo "        User $SSH_USER"
+echo "        IdentityFile C:/Users/<YourUser>/.ssh/id_ed25519_hermes"
+echo "        IdentitiesOnly yes"
+echo " 4. Open a PowerShell terminal and start your secure local port-forwarding tunnel:"
+echo "    ssh -L 8642:127.0.0.1:$HERMES_API_PORT hermes-server"
+echo " 5. Access Hermes locally on your Windows client at http://127.0.0.1:8642"
 echo "    using Bearer token authentication: $HERMES_API_TOKEN"
 echo "--------------------------------------------------------"
