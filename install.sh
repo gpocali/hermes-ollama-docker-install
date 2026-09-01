@@ -3,6 +3,16 @@
 # Hermes Agent, Network Ollama & Self-Signed LAN Dashboard Jump-Pad Installer
 # Target OS: Ubuntu 26.04 LTS (Optimized for Dedicated AI Host Nodes)
 # ==============================================================================
+# 
+# ARCHITECTURE & PERSISTENCE OVERVIEW:
+# 1. Config Persistence: Saves user input (domain/IP) to /storage/installer.conf 
+#    so subsequent runs skip prompts automatically.
+# 2. Self-Signed SSL: Generates a 10-year self-signed certificate stored at 
+#    /storage/certs/ for local LAN HTTPS access without requiring Let's Encrypt.
+# 3. Ollama Backend (Port 11434): Bound to 0.0.0.0 with open CORS (*) for LAN clients.
+# 4. Hermes Unified Dashboard (Port 9119): Serves the agent core, APIs, and Web UI 
+#    under a single process proxied securely via Nginx over HTTPS.
+# ==============================================================================
 
 set -euo pipefail
 
@@ -18,7 +28,7 @@ OLLAMA_PORT=11434
 HERMES_DASHBOARD_PORT=9119
 DOMAIN_NAME=""
 
-echo "===> [1/8] Verifying system privileges and checking configuration state..."
+echo "===> [1/7] Verifying system privileges and checking configuration state..."
 if [[ $EUID -ne 0 ]]; then
    echo "Error: This script must be run with root privileges (e.g., sudo bash install.sh)" >&2
    exit 1
@@ -60,7 +70,7 @@ fi
 # ------------------------------------------------------------------------------
 # 2. Storage Infrastructure Setup
 # ------------------------------------------------------------------------------
-echo "===> [2/8] Configuring high-capacity storage layout at $STORAGE_ROOT..."
+echo "===> [2/7] Configuring high-capacity storage layout at $STORAGE_ROOT..."
 mkdir -p "$STORAGE_ROOT"
 
 if ! mountpoint -q "$STORAGE_ROOT"; then
@@ -72,7 +82,7 @@ mkdir -p "$HERMES_HOME" "$OLLAMA_MODELS_DIR" "$DOCKER_DATA_DIR" "$CERT_DIR"
 # ------------------------------------------------------------------------------
 # 3. System Dependencies & Nginx Setup
 # ------------------------------------------------------------------------------
-echo "===> [3/8] Installing system tools, Nginx, and Docker engine..."
+echo "===> [3/7] Installing system tools, Nginx, and Docker engine..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y curl wget git jq ufw apt-transport-https ca-certificates gnupg lsb-release pipx openssl nginx
@@ -99,7 +109,7 @@ fi
 # ------------------------------------------------------------------------------
 # 4. Local Ollama Backend Configuration (Network Accessible)
 # ------------------------------------------------------------------------------
-echo "===> [4/8] Deploying Ollama LLM backend with network accessibility..."
+echo "===> [4/7] Deploying Ollama LLM backend with network accessibility..."
 if systemctl is-active --quiet ollama; then
     systemctl stop ollama
 fi
@@ -133,9 +143,9 @@ echo "Pulling foundation model ($DEFAULT_GEMMA_MODEL)..."
 ollama pull "$DEFAULT_GEMMA_MODEL"
 
 # ------------------------------------------------------------------------------
-# 5. Hermes Agent Core & Dashboard Configuration
+# 5. Hermes Agent Core & Unified Config
 # ------------------------------------------------------------------------------
-echo "===> [5/8] Installing Hermes Agent and configuring dashboard bindings..."
+echo "===> [5/7] Installing Hermes Agent and writing routing config..."
 export HERMES_CONFIG_DIR="$HERMES_HOME/config"
 mkdir -p "$HERMES_CONFIG_DIR"
 
@@ -172,10 +182,17 @@ dashboard:
   port: $HERMES_DASHBOARD_PORT
 EOF
 
+# Stop and remove legacy headless serve service if present
+if systemctl is-active --quiet hermes-agent.service 2>/dev/null || systemctl is-enabled --quiet hermes-agent.service 2>/dev/null; then
+    systemctl stop hermes-agent.service || true
+    systemctl disable hermes-agent.service || true
+    rm -f /etc/systemd/system/hermes-agent.service
+fi
+
 # ------------------------------------------------------------------------------
 # 6. Self-Signed SSL Certificate Generation & Nginx Reverse Proxy Setup
 # ------------------------------------------------------------------------------
-echo "===> [6/8] Generating self-signed SSL certificates and configuring Nginx..."
+echo "===> [6/7] Generating self-signed SSL certificates and configuring Nginx..."
 
 if [[ ! -f "$CERT_DIR/server.crt" ]] || [[ ! -f "$CERT_DIR/server.key" ]]; then
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
@@ -240,12 +257,12 @@ nginx -t
 systemctl reload nginx
 
 # ------------------------------------------------------------------------------
-# 7. Systemd Service Deployment for Hermes Dashboard Gateway
+# 7. Systemd Service Deployment & Final Validation
 # ------------------------------------------------------------------------------
-echo "===> [7/8] Configuring systemd service for Hermes Dashboard..."
+echo "===> [7/7] Configuring systemd service for Hermes Unified Dashboard..."
 cat <<EOF > /etc/systemd/system/hermes-dashboard.service
 [Unit]
-Description=Hermes Agent Web Dashboard Service
+Description=Hermes Agent Unified Web Dashboard Service
 After=network.target ollama.service
 Wants=ollama.service
 
@@ -254,6 +271,9 @@ Type=simple
 User=root
 Environment="HOME=$STORAGE_ROOT"
 Environment="HERMES_CONFIG_DIR=$HERMES_CONFIG_DIR"
+Environment="HERMES_PROVIDER=ollama"
+Environment="HERMES_MODEL=$DEFAULT_GEMMA_MODEL"
+Environment="OPENAI_API_BASE=http://127.0.0.1:$OLLAMA_PORT/v1"
 ExecStart=/usr/local/bin/hermes dashboard --host 127.0.0.1 --port $HERMES_DASHBOARD_PORT --no-open
 Restart=always
 RestartSec=10
@@ -265,10 +285,6 @@ EOF
 systemctl daemon-reload
 systemctl enable --now hermes-dashboard.service
 
-# ------------------------------------------------------------------------------
-# 8. Firewall Configuration & Summary
-# ------------------------------------------------------------------------------
-echo "===> [8/8] Securing firewall rules..."
 if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
     ufw allow 80/tcp comment "HTTP (Redirect to HTTPS)"
     ufw allow 443/tcp comment "HTTPS (Hermes Web UI)"
