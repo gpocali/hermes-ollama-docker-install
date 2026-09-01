@@ -28,6 +28,7 @@ CONFIG_FILE="${STORAGE_ROOT}/installer.conf"
 DEFAULT_GEMMA_MODEL="gemma4:latest"
 OLLAMA_PORT=11434
 HERMES_DASHBOARD_PORT=9119
+DOMAIN_NAME=""
 
 echo "===> [1/8] Verifying system privileges and checking configuration state..."
 if [[ $EUID -ne 0 ]]; then
@@ -46,7 +47,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
 fi
 
 # Prompt and save domain/IP if not already configured
-if [[ -z "${DOMAIN_NAME:-}" ]]; then
+if [[ -z "$DOMAIN_NAME" ]]; then
     while [[ -z "$DOMAIN_NAME" ]]; do
         read -p "Enter your local domain name or server IP for the dashboard (e.g., hermes.local or 192.168.1.50): " DOMAIN_NAME
         DOMAIN_NAME=$(echo "$DOMAIN_NAME" | tr -d '\r' | xargs)
@@ -184,7 +185,6 @@ EOF
 # ------------------------------------------------------------------------------
 echo "===> [6/8] Generating self-signed SSL certificates and configuring Nginx..."
 
-# Generate self-signed certificate valid for 10 years if not already present
 if [[ ! -f "$CERT_DIR/server.crt" ]] || [[ ! -f "$CERT_DIR/server.key" ]]; then
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
         -keyout "$CERT_DIR/server.key" \
@@ -200,7 +200,6 @@ else
     echo "Existing SSL certificates found in $CERT_DIR. Skipping generation."
 fi
 
-# Write Nginx configuration for self-signed HTTPS proxying
 cat <<EOF > /etc/nginx/sites-available/hermes
 upstream hermes_dashboard {
     server 127.0.0.1:$HERMES_DASHBOARD_PORT;
@@ -228,7 +227,6 @@ server {
         proxy_pass http://hermes_dashboard;
         proxy_http_version 1.1;
         
-        # WebSocket support for real-time session streaming
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         
