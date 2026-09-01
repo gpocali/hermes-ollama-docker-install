@@ -3,21 +3,9 @@
 # Hermes Agent, Network Ollama & Self-Signed LAN Dashboard Jump-Pad Installer
 # Target OS: Ubuntu 26.04 LTS (Optimized for Dedicated AI Host Nodes)
 # ==============================================================================
-# 
-# ARCHITECTURE & PERSISTENCE OVERVIEW:
-# 1. Config Persistence: Saves user input (domain/IP) to /storage/installer.conf 
-#    so subsequent runs skip prompts automatically.
-# 2. Self-Signed SSL: Generates a 10-year self-signed certificate stored at 
-#    /storage/certs/ for local LAN HTTPS access without requiring Let's Encrypt.
-# 3. Ollama Backend (Port 11434): Bound to 0.0.0.0 with open CORS (*) for LAN clients.
-# 4. Hermes Dashboard (Port 9119): Proxied securely via Nginx over HTTPS.
-# ==============================================================================
 
 set -euo pipefail
 
-# ------------------------------------------------------------------------------
-# 1. Configuration Constants & Persistent Settings Check
-# ------------------------------------------------------------------------------
 STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
@@ -40,10 +28,14 @@ if ! grep -qEi "ubuntu" /etc/os-release; then
     echo "Warning: This environment is not Ubuntu. Some package paths may vary."
 fi
 
-# Load previous configuration if it exists to avoid re-prompting
+# Load previous configuration if it exists and sanitize it
 if [[ -f "$CONFIG_FILE" ]]; then
     echo "===> Loading existing configuration from $CONFIG_FILE..."
     source "$CONFIG_FILE"
+    # Invalidate if it accidentally picked up comments or bad strings
+    if [[ "$DOMAIN_NAME" == \#* ]] || [[ ${#DOMAIN_NAME} -gt 64 ]]; then
+        DOMAIN_NAME=""
+    fi
 fi
 
 # Prompt and save domain/IP if not already configured
@@ -51,12 +43,12 @@ if [[ -z "$DOMAIN_NAME" ]]; then
     while [[ -z "$DOMAIN_NAME" ]]; do
         read -p "Enter your local domain name or server IP for the dashboard (e.g., hermes.local or 192.168.1.50): " DOMAIN_NAME
         DOMAIN_NAME=$(echo "$DOMAIN_NAME" | tr -d '\r' | xargs)
-        if [[ -z "$DOMAIN_NAME" ]]; then
-            echo "Notice: Domain/IP cannot be empty. Please try again."
+        if [[ -z "$DOMAIN_NAME" ]] || [[ "$DOMAIN_NAME" == \#* ]]; then
+            echo "Notice: Invalid domain/IP. Please try again."
+            DOMAIN_NAME=""
         fi
     done
 
-    # Save to config file for future runs
     mkdir -p "$STORAGE_ROOT"
     echo "DOMAIN_NAME=\"$DOMAIN_NAME\"" > "$CONFIG_FILE"
     echo "Saved configuration to $CONFIG_FILE"
@@ -72,7 +64,6 @@ mkdir -p "$STORAGE_ROOT"
 
 if ! mountpoint -q "$STORAGE_ROOT"; then
     echo "Notice: $STORAGE_ROOT is currently operating on the root system volume."
-    echo "Tip: If using a dedicated secondary drive, format it and add its UUID to /etc/fstab."
 fi
 
 mkdir -p "$HERMES_HOME" "$OLLAMA_MODELS_DIR" "$DOCKER_DATA_DIR" "$CERT_DIR"
