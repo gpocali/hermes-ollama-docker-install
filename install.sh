@@ -1,34 +1,35 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Hermes Agent, Network Ollama & Secure Web Dashboard Jump-Pad Installer
+# Hermes Agent, Network Ollama & Self-Signed LAN Dashboard Jump-Pad Installer
 # Target OS: Ubuntu 26.04 LTS (Optimized for Dedicated AI Host Nodes)
 # ==============================================================================
 # 
-# ARCHITECTURE OVERVIEW FOR NEWCOMERS:
-# 1. Ollama Backend (Port 11434): Handles local LLM inference (Gemma 4). Bound to 
-#    0.0.0.0 with open CORS (*) so local network clients can query models.
-# 2. Hermes Dashboard (Port 9119): Built-in browser control panel for managing 
-#    sessions, models, environment variables, and agent settings. Bound to 
-#    localhost (127.0.0.1) for security.
-# 3. Nginx Reverse Proxy & SSL: Terminates external traffic securely over HTTPS, 
-#    handles WebSocket upgrades for live chat streaming, and proxies requests 
-#    cleanly to the local Hermes Dashboard.
+# ARCHITECTURE & PERSISTENCE OVERVIEW:
+# 1. Config Persistence: Saves user input (domain/IP) to /storage/installer.conf 
+#    so subsequent runs skip prompts automatically.
+# 2. Self-Signed SSL: Generates a 10-year self-signed certificate stored at 
+#    /storage/certs/ for local LAN HTTPS access without requiring Let's Encrypt.
+# 3. Ollama Backend (Port 11434): Bound to 0.0.0.0 with open CORS (*) for LAN clients.
+# 4. Hermes Dashboard (Port 9119): Proxied securely via Nginx over HTTPS.
 # ==============================================================================
 
 set -euo pipefail
 
 # ------------------------------------------------------------------------------
-# 1. Configuration Constants & User Prompts (With Validation Loops)
+# 1. Configuration Constants & Persistent Settings Check
 # ------------------------------------------------------------------------------
 STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
 DOCKER_DATA_DIR="${STORAGE_ROOT}/docker"
+CERT_DIR="${STORAGE_ROOT}/certs"
+CONFIG_FILE="${STORAGE_ROOT}/installer.conf"
+
 DEFAULT_GEMMA_MODEL="gemma4:latest"
 OLLAMA_PORT=11434
 HERMES_DASHBOARD_PORT=9119
 
-echo "===> [1/8] Verifying system privileges and gathering parameters..."
+echo "===> [1/8] Verifying system privileges and checking configuration state..."
 if [[ $EUID -ne 0 ]]; then
    echo "Error: This script must be run with root privileges (e.g., sudo bash install.sh)" >&2
    exit 1
@@ -38,23 +39,29 @@ if ! grep -qEi "ubuntu" /etc/os-release; then
     echo "Warning: This environment is not Ubuntu. Some package paths may vary."
 fi
 
-# Loop until a valid domain name is provided
-DOMAIN_NAME=""
-while [[ -z "$DOMAIN_NAME" ]]; do
-    read -p "Enter the domain or subdomain for your Hermes Dashboard (e.g., hermes.yourdomain.com): " DOMAIN_NAME
-    if [[ -z "$DOMAIN_NAME" ]]; then
-        echo "Notice: Domain name cannot be empty for SSL setup. Please try again."
-    fi
-done
+# Load previous configuration if it exists to avoid re-prompting
+if [[ -f "$CONFIG_FILE" ]]; then
+    echo "===> Loading existing configuration from $CONFIG_FILE..."
+    source "$CONFIG_FILE"
+fi
 
-# Loop until a valid email is provided
-SSL_EMAIL=""
-while [[ -z "$SSL_EMAIL" ]]; do
-    read -p "Enter your email address for Let's Encrypt SSL registration: " SSL_EMAIL
-    if [[ -z "$SSL_EMAIL" ]]; then
-        echo "Notice: Email address cannot be empty for SSL registration. Please try again."
-    fi
-done
+# Prompt and save domain/IP if not already configured
+if [[ -z "${DOMAIN_NAME:-}" ]]; then
+    while [[ -z "$DOMAIN_NAME" ]]; do
+        read -p "Enter your local domain name or server IP for the dashboard (e.g., hermes.local or 192.168.1.50): " DOMAIN_NAME
+        DOMAIN_NAME=$(echo "$DOMAIN_NAME" | tr -d '\r' | xargs)
+        if [[ -z "$DOMAIN_NAME" ]]; then
+            echo "Notice: Domain/IP cannot be empty. Please try again."
+        fi
+    done
+
+    # Save to config file for future runs
+    mkdir -p "$STORAGE_ROOT"
+    echo "DOMAIN_NAME=\"$DOMAIN_NAME\"" > "$CONFIG_FILE"
+    echo "Saved configuration to $CONFIG_FILE"
+else
+    echo "Using configured Domain/IP: $DOMAIN_NAME"
+fi
 
 # ------------------------------------------------------------------------------
 # 2. Storage Infrastructure Setup
@@ -67,15 +74,15 @@ if ! mountpoint -q "$STORAGE_ROOT"; then
     echo "Tip: If using a dedicated secondary drive, format it and add its UUID to /etc/fstab."
 fi
 
-mkdir -p "$HERMES_HOME" "$OLLAMA_MODELS_DIR" "$DOCKER_DATA_DIR"
+mkdir -p "$HERMES_HOME" "$OLLAMA_MODELS_DIR" "$DOCKER_DATA_DIR" "$CERT_DIR"
 
 # ------------------------------------------------------------------------------
-# 3. System Dependencies & Nginx / Certbot Setup
+# 3. System Dependencies & Nginx Setup
 # ------------------------------------------------------------------------------
-echo "===> [3/8] Installing system tools, Nginx, Certbot, and Docker engine..."
+echo "===> [3/8] Installing system tools, Nginx, and Docker engine..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl wget git jq ufw apt-transport-https ca-certificates gnupg lsb-release pipx openssl nginx certbot python3-certbot-nginx
+apt-get install -y curl wget git jq ufw apt-transport-https ca-certificates gnupg lsb-release pipx openssl nginx
 
 if ! command -v docker &> /dev/null; then
     echo "Installing Docker Engine for sandboxed agent execution..."
@@ -109,12 +116,10 @@ if ! command -v ollama &> /dev/null; then
     curl -fsSL https://ollama.com/install.sh | sh
 fi
 
-# Ensure the system 'ollama' user exists and owns the storage directory
 id -u ollama &>/dev/null || useradd -r -s /bin/false ollama
 mkdir -p /storage/ollama
 chown -R ollama:ollama /storage/ollama
 
-# Configure systemd override to bind Ollama to all network interfaces (0.0.0.0)
 mkdir -p /etc/systemd/system/ollama.service.d
 cat <<EOF > /etc/systemd/system/ollama.service.d/override.conf
 [Service]
@@ -152,7 +157,6 @@ if ! command -v hermes &> /dev/null; then
     fi
 fi
 
-# Write core routing config matching local Ollama endpoints
 cat <<EOF > "$HERMES_CONFIG_DIR/config.yaml"
 version: "1.0"
 backend: local
@@ -176,47 +180,27 @@ dashboard:
 EOF
 
 # ------------------------------------------------------------------------------
-# 6. Nginx Reverse Proxy Setup with SSL (Let's Encrypt)
+# 6. Self-Signed SSL Certificate Generation & Nginx Reverse Proxy Setup
 # ------------------------------------------------------------------------------
-echo "===> [6/8] Configuring Nginx reverse proxy and SSL for Hermes Dashboard..."
-mkdir -p /var/www/letsencrypt
+echo "===> [6/8] Generating self-signed SSL certificates and configuring Nginx..."
 
-# Write initial HTTP configuration for Let's Encrypt validation challenge
-cat <<EOF > /etc/nginx/sites-available/hermes
-upstream hermes_dashboard {
-    server 127.0.0.1:$HERMES_DASHBOARD_PORT;
-    keepalive 32;
-}
+# Generate self-signed certificate valid for 10 years if not already present
+if [[ ! -f "$CERT_DIR/server.crt" ]] || [[ ! -f "$CERT_DIR/server.key" ]]; then
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout "$CERT_DIR/server.key" \
+        -out "$CERT_DIR/server.crt" \
+        -subj "/CN=$DOMAIN_NAME/O=HermesLocal/C=US" \
+        -addext "subjectAltName=DNS:$DOMAIN_NAME,IP:$DOMAIN_NAME" 2>/dev/null || \
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout "$CERT_DIR/server.key" \
+        -out "$CERT_DIR/server.crt" \
+        -subj "/CN=$DOMAIN_NAME/O=HermesLocal/C=US"
+    echo "Self-signed SSL certificate generated successfully."
+else
+    echo "Existing SSL certificates found in $CERT_DIR. Skipping generation."
+fi
 
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $DOMAIN_NAME;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/letsencrypt;
-    }
-
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-EOF
-
-ln -sfn /etc/nginx/sites-available/hermes /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
-nginx -t
-systemctl reload nginx
-
-echo "Obtaining SSL certificate via Certbot for $DOMAIN_NAME..."
-certbot certonly --webroot \
-    -w /var/www/letsencrypt \
-    -d "$DOMAIN_NAME" \
-    --email "$SSL_EMAIL" \
-    --agree-tos \
-    --non-interactive
-
-# Update Nginx config with full SSL termination, WebSockets, and proxy optimizations
+# Write Nginx configuration for self-signed HTTPS proxying
 cat <<EOF > /etc/nginx/sites-available/hermes
 upstream hermes_dashboard {
     server 127.0.0.1:$HERMES_DASHBOARD_PORT;
@@ -235,8 +219,8 @@ server {
     listen [::]:443 ssl;
     server_name $DOMAIN_NAME;
 
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN_NAME/privkey.pem;
+    ssl_certificate $CERT_DIR/server.crt;
+    ssl_certificate_key $CERT_DIR/server.key;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
 
@@ -253,7 +237,6 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
 
-        # Timeouts and streaming buffering adjustments for long-running AI generation
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
         proxy_buffering off;
@@ -261,6 +244,8 @@ server {
 }
 EOF
 
+ln -sfn /etc/nginx/sites-available/hermes /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
 nginx -t
 systemctl reload nginx
 
@@ -295,7 +280,7 @@ systemctl enable --now hermes-dashboard.service
 # ------------------------------------------------------------------------------
 echo "===> [8/8] Securing firewall rules..."
 if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
-    ufw allow 80/tcp comment "HTTP (Let's Encrypt)"
+    ufw allow 80/tcp comment "HTTP (Redirect to HTTPS)"
     ufw allow 443/tcp comment "HTTPS (Hermes Web UI)"
     ufw allow "$OLLAMA_PORT/tcp" comment "Ollama Network API Access"
     ufw reload
@@ -306,12 +291,15 @@ SERVER_IP="$(hostname -I | awk '{print $1}')"
 echo "========================================================================"
 echo "                   INSTALLATION COMPLETE SUCCESSFULLY!                  "
 echo "========================================================================"
-echo " Storage Path Map    : $STORAGE_ROOT"
-echo " Ollama API (LAN)    : http://$SERVER_IP:$OLLAMA_PORT"
-echo " Hermes Dashboard    : https://$DOMAIN_NAME"
-echo " Default Model       : $DEFAULT_GEMMA_MODEL"
+echo " Storage Path Map       : $STORAGE_ROOT"
+echo " Config Persistence     : $CONFIG_FILE"
+echo " SSL Certificate Path   : $CERT_DIR/server.crt"
+echo " SSL Private Key Path   : $CERT_DIR/server.key"
+echo " Ollama API (LAN)       : http://$SERVER_IP:$OLLAMA_PORT"
+echo " Hermes Dashboard (LAN) : https://$DOMAIN_NAME (or https://$SERVER_IP)"
 echo "------------------------------------------------------------------------"
-echo " ACCESS YOUR WEB DASHBOARD:"
-echo " Open your web browser and go to: https://$DOMAIN_NAME"
-echo " All chat panels, tool calls, logs, and settings will stream securely via SSL!"
+echo " NOTE ON SELF-SIGNED CERTIFICATES:"
+echo " Your browser will show a security warning because the SSL certificate is"
+echo " self-signed. You can safely bypass this warning, or replace 'server.crt'"
+echo " and 'server.key' in $CERT_DIR with your own custom/enterprise certificates."
 echo "========================================================================"
