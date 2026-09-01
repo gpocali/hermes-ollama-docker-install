@@ -32,22 +32,23 @@ fi
 if [[ -f "$CONFIG_FILE" ]]; then
     echo "===> Loading existing configuration from $CONFIG_FILE..."
     source "$CONFIG_FILE"
-    # Invalidate if it accidentally picked up comments or bad strings
-    if [[ "$DOMAIN_NAME" == \#* ]] || [[ ${#DOMAIN_NAME} -gt 64 ]]; then
+    if [[ "$DOMAIN_NAME" == \#* ]] || [[ "$DOMAIN_NAME" == *\[* ]] || [[ ${#DOMAIN_NAME} -gt 64 ]]; then
         DOMAIN_NAME=""
     fi
 fi
 
-# Prompt and save domain/IP if not already configured
+# Fallback to system hostname if no valid config exists
 if [[ -z "$DOMAIN_NAME" ]]; then
-    while [[ -z "$DOMAIN_NAME" ]]; do
-        read -p "Enter your local domain name or server IP for the dashboard (e.g., hermes.local or 192.168.1.50): " DOMAIN_NAME
-        DOMAIN_NAME=$(echo "$DOMAIN_NAME" | tr -d '\r' | xargs)
-        if [[ -z "$DOMAIN_NAME" ]] || [[ "$DOMAIN_NAME" == \#* ]]; then
-            echo "Notice: Invalid domain/IP. Please try again."
-            DOMAIN_NAME=""
-        fi
-    done
+    SYSTEM_HOSTNAME="$(hostname -f 2>/dev/null || hostname)"
+    read -p "Enter local domain/IP for dashboard [Default: $SYSTEM_HOSTNAME]: " USER_INPUT
+    USER_INPUT=$(echo "$USER_INPUT" | tr -d '\r' | xargs)
+    
+    if [[ -z "$USER_INPUT" ]]; then
+        DOMAIN_NAME="$SYSTEM_HOSTNAME"
+        echo "No input provided. Using system hostname: $DOMAIN_NAME"
+    else
+        DOMAIN_NAME="$USER_INPUT"
+    fi
 
     mkdir -p "$STORAGE_ROOT"
     echo "DOMAIN_NAME=\"$DOMAIN_NAME\"" > "$CONFIG_FILE"
