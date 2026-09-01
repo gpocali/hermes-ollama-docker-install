@@ -18,7 +18,7 @@
 set -euo pipefail
 
 # ------------------------------------------------------------------------------
-# 1. Configuration Constants & User Prompts
+# 1. Configuration Constants & User Prompts (With Validation Loops)
 # ------------------------------------------------------------------------------
 STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
@@ -38,18 +38,23 @@ if ! grep -qEi "ubuntu" /etc/os-release; then
     echo "Warning: This environment is not Ubuntu. Some package paths may vary."
 fi
 
-# Prompt for domain name to issue SSL certificates via Certbot
-read -p "Enter the domain or subdomain for your Hermes Dashboard (e.g., hermes.yourdomain.com): " DOMAIN_NAME
-if [[ -z "$DOMAIN_NAME" ]]; then
-    echo "Error: Domain name cannot be empty for SSL setup." >&2
-    exit 1
-fi
+# Loop until a valid domain name is provided
+DOMAIN_NAME=""
+while [[ -z "$DOMAIN_NAME" ]]; do
+    read -p "Enter the domain or subdomain for your Hermes Dashboard (e.g., hermes.yourdomain.com): " DOMAIN_NAME
+    if [[ -z "$DOMAIN_NAME" ]]; then
+        echo "Notice: Domain name cannot be empty for SSL setup. Please try again."
+    fi
+done
 
-read -p "Enter your email address for Let's Encrypt SSL registration: " SSL_EMAIL
-if [[ -z "$SSL_EMAIL" ]]; then
-    echo "Error: Email address cannot be empty for SSL registration." >&2
-    exit 1
-fi
+# Loop until a valid email is provided
+SSL_EMAIL=""
+while [[ -z "$SSL_EMAIL" ]]; do
+    read -p "Enter your email address for Let's Encrypt SSL registration: " SSL_EMAIL
+    if [[ -z "$SSL_EMAIL" ]]; then
+        echo "Notice: Email address cannot be empty for SSL registration. Please try again."
+    fi
+done
 
 # ------------------------------------------------------------------------------
 # 2. Storage Infrastructure Setup
@@ -124,7 +129,7 @@ systemctl enable --now ollama
 echo "Waiting for Ollama API endpoint to become responsive..."
 until curl -s "http://127.0.0.1:$OLLAMA_PORT/api/tags" > /dev/null 2>&1; do
     sleep 2
-fi
+done
 
 echo "Pulling foundation model ($DEFAULT_GEMMA_MODEL)..."
 ollama pull "$DEFAULT_GEMMA_MODEL"
