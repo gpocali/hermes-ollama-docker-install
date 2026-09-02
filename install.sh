@@ -13,15 +13,15 @@
 # 3. Ollama Backend (Port 11434): Bound to 0.0.0.0 with open CORS (*) for LAN clients.
 # 4. Hermes Unified Dashboard (Port 9119): Proxied securely via Nginx over HTTPS, 
 #    complete with dynamic WebSocket mapping and Host/Origin header overrides.
-# 5. Native Custom Provider, Egress & Browser Container: Configures custom 
+# 5. Native Custom Provider, Egress & Google Chrome Container: Configures custom 
 #    Ollama provider, disables proxy blockages (`proxy.enabled: false`), pre-initializes 
-#    skills hub, and builds a local Docker image (`hermes-browser-env`) with 
-#    Chromium, Xvfb, and Xauth for sandboxed browser tool execution.
+#    skills hub, and builds a local Docker image (`hermes-browser-env`) using 
+#    Google Chrome Stable (bypassing Ubuntu Snap restrictions) with Xvfb and Xauth.
 # ==============================================================================
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.7"
+INSTALLER_VERSION="2.8"
 STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
@@ -92,12 +92,12 @@ fi
 mkdir -p "$HERMES_HOME" "$OLLAMA_MODELS_DIR" "$DOCKER_DATA_DIR" "$CERT_DIR"
 
 # ------------------------------------------------------------------------------
-# 3. System Dependencies, Browser Docker Image & Nginx Setup
+# 3. System Dependencies, Browser Docker Image (Google Chrome) & Nginx Setup
 # ------------------------------------------------------------------------------
-echo "===> [3/7] Installing system tools, Nginx, Docker engine, and building browser container..."
+echo "===> [3/7] Installing system tools, Nginx, Docker engine, and building Chrome browser container..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl wget git jq ufw apt-transport-https ca-certificates gnupg lsb-release pipx openssl nginx chromium xvfb xauth
+apt-get install -y curl wget git jq ufw apt-transport-https ca-certificates gnupg lsb-release pipx openssl nginx xvfb xauth
 
 if ! command -v docker &> /dev/null; then
     echo "Installing Docker Engine for sandboxed agent execution..."
@@ -118,20 +118,31 @@ if [[ -n "${SUDO_USER:-}" ]]; then
     usermod -aG docker "$SUDO_USER"
 fi
 
-# Build local sandboxed browser container for Hermes browser skills (without missing plugin)
+# Build local sandboxed browser container using Google Chrome Stable (Bypassing Ubuntu Snap)
 BUILD_DIR="$STORAGE_ROOT/docker/browser-build"
 mkdir -p "$BUILD_DIR"
 cat <<EOF > "$BUILD_DIR/Dockerfile"
 FROM ubuntu:26.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
-    apt-get install -y chromium xvfb xauth libgtk-3-dev && \
+    apt-get install -y wget curl gnupg xvfb xauth libgtk-3-dev libnss3 libasound2t64 libxss1 libxtst6 xdg-utils && \
+    wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
+    apt-get install -y ./google-chrome-stable_current_amd64.deb || apt-get -f install -y && \
+    rm google-chrome-stable_current_amd64.deb && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-CMD ["/usr/bin/xvfb-run", "/usr/bin/chromium-browser", "--no-sandbox"]
+
+COPY <<'ENTRY' /usr/local/bin/browser-entry.sh
+#!/usr/bin/env bash
+exec xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" \
+    google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu "\$@"
+ENTRY
+RUN chmod +x /usr/local/bin/browser-entry.sh
+
+ENTRYPOINT ["/usr/local/bin/browser-entry.sh"]
 EOF
 
-echo "Building local Docker image 'hermes-browser-env'..."
+echo "Building local Docker image 'hermes-browser-env' with Google Chrome..."
 docker build -t hermes-browser-env "$BUILD_DIR"
 
 # ------------------------------------------------------------------------------
@@ -204,6 +215,8 @@ web:
 browser:
   cloud_provider: local
   image: hermes-browser-env
+  headless: true
+  no_sandbox: true
 display:
   tool_progress: all
 computer_use:
@@ -366,7 +379,7 @@ echo " Storage Path Map       : $STORAGE_ROOT"
 echo " Config Persistence     : $CONFIG_FILE"
 echo " Allowed Domains/IPs    : $SERVER_DOMAINS"
 echo " SSL Certificate Path   : $CERT_DIR/server.crt"
-echo " Browser Container Image: hermes-browser-env (Local Docker)"
+echo " Browser Container Image: hermes-browser-env (Google Chrome Stable)"
 echo " Ollama API (LAN)       : http://$PRIMARY_IP:$OLLAMA_PORT"
 echo " Hermes Dashboard (LAN) : https://$PRIMARY_NAME or https://$PRIMARY_IP"
 echo "------------------------------------------------------------------------"
