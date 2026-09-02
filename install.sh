@@ -12,7 +12,7 @@
 #    containing all discovered hostnames and IPs as Subject Alternative Names.
 # 3. Ollama Backend (Port 11434): Bound to 0.0.0.0 with open CORS (*) for LAN clients.
 # 4. Hermes Unified Dashboard (Port 9119): Proxied securely via Nginx over HTTPS, 
-#    with Host-header rewriting to satisfy internal security checks.
+#    complete with dynamic WebSocket upgrade mapping and Host-header rewriting.
 # ==============================================================================
 
 set -euo pipefail
@@ -48,7 +48,6 @@ DEFAULT_DOMAINS="$SYSTEM_HOSTNAME $SYSTEM_IPS"
 if [[ -f "$CONFIG_FILE" ]]; then
     echo "===> Loading existing configuration from $CONFIG_FILE..."
     source "$CONFIG_FILE"
-    # Fallback if SERVER_DOMAINS was left blank
     if [[ -z "${SERVER_DOMAINS:-}" ]]; then
         SERVER_DOMAINS="$DEFAULT_DOMAINS"
     fi
@@ -192,11 +191,10 @@ if systemctl is-active --quiet hermes-agent.service 2>/dev/null || systemctl is-
 fi
 
 # ------------------------------------------------------------------------------
-# 6. Dynamic Multi-SAN SSL Certificate Generation & Nginx Setup
+# 6. Dynamic Multi-SAN SSL Certificate Generation & Nginx Setup (with WebSockets)
 # ------------------------------------------------------------------------------
 echo "===> [6/7] Generating multi-SAN SSL certificates and configuring Nginx..."
 
-# Dynamically construct OpenSSL SAN extensions from SERVER_DOMAINS
 SAN_EXT="subjectAltName=DNS:localhost,IP:127.0.0.1"
 for entry in $SERVER_DOMAINS; do
     if [[ "$entry" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$entry" =~ : ]]; then
@@ -224,6 +222,11 @@ else
 fi
 
 cat <<EOF > /etc/nginx/sites-available/hermes
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 upstream hermes_dashboard {
     server 127.0.0.1:$HERMES_DASHBOARD_PORT;
     keepalive 32;
@@ -250,8 +253,9 @@ server {
         proxy_pass http://hermes_dashboard;
         proxy_http_version 1.1;
         
+        # Dynamic WebSocket support for live chat streaming
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection \$connection_upgrade;
         
         # Satisfy Hermes strict internal host-header validation
         proxy_set_header Host 127.0.0.1:$HERMES_DASHBOARD_PORT;
