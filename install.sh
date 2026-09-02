@@ -13,13 +13,14 @@
 # 3. Ollama Backend (Port 11434): Bound to 0.0.0.0 with open CORS (*) for LAN clients.
 # 4. Hermes Unified Dashboard (Port 9119): Proxied securely via Nginx over HTTPS, 
 #    complete with dynamic WebSocket mapping and Host/Origin header overrides.
-# 5. Native Custom Provider Config: Seeds Hermes configuration with the validated 
-#    custom local provider map targeting Ollama, avoiding MOA aggregator faults.
+# 5. Native Custom Provider & Egress Config: Configures custom Ollama provider, 
+#    disables proxy blockages (`proxy.enabled: false`), and pre-initializes the 
+#    skills hub so agent capabilities work out of the box.
 # ==============================================================================
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.2"
+INSTALLER_VERSION="2.3"
 STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
@@ -153,9 +154,9 @@ echo "Pulling foundation model ($DEFAULT_GEMMA_MODEL)..."
 ollama pull "$DEFAULT_GEMMA_MODEL"
 
 # ------------------------------------------------------------------------------
-# 5. Hermes Agent Core & Native Custom Provider Config
+# 5. Hermes Agent Core, Config & Skills Hub Initialization
 # ------------------------------------------------------------------------------
-echo "===> [5/7] Installing Hermes Agent and writing routing config..."
+echo "===> [5/7] Installing Hermes Agent, writing routing config, and initializing Skills Hub..."
 export HERMES_CONFIG_DIR="$HERMES_HOME/config"
 mkdir -p "$HERMES_CONFIG_DIR"
 
@@ -189,7 +190,7 @@ display:
 computer_use:
   backend: cua
 proxy:
-  enabled: true
+  enabled: false
 _config_version: 39
 session_reset:
   mode: none
@@ -202,6 +203,11 @@ dashboard:
   host: "127.0.0.1"
   port: $HERMES_DASHBOARD_PORT
 EOF
+
+# Pre-initialize skills hub directory so native skills are ready out-of-the-box
+mkdir -p "$HERMES_HOME/skills"
+export HOME="$STORAGE_ROOT"
+hermes skills list --config-dir "$HERMES_CONFIG_DIR" >/dev/null 2>&1 || true
 
 if systemctl is-active --quiet hermes-agent.service 2>/dev/null || systemctl is-enabled --quiet hermes-agent.service 2>/dev/null; then
     systemctl stop hermes-agent.service || true
