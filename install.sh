@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.3"
+INSTALLER_VERSION="2.4"
 STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
@@ -122,7 +122,8 @@ fi
 # ------------------------------------------------------------------------------
 echo "===> [4/7] Deploying Ollama LLM backend with network accessibility..."
 if systemctl is-active --quiet ollama; then
-    systemctl stop ollama
+    echo "Restarting Ollama service..."
+    systemctl restart ollama
 fi
 
 if ! command -v ollama &> /dev/null; then
@@ -204,7 +205,6 @@ dashboard:
   port: $HERMES_DASHBOARD_PORT
 EOF
 
-# Pre-initialize skills hub directory so native skills are ready out-of-the-box
 mkdir -p "$HERMES_HOME/skills"
 export HOME="$STORAGE_ROOT"
 hermes skills list --config-dir "$HERMES_CONFIG_DIR" >/dev/null 2>&1 || true
@@ -278,11 +278,9 @@ server {
         proxy_pass http://hermes_dashboard;
         proxy_http_version 1.1;
         
-        # Dynamic WebSocket support for live chat streaming
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \$connection_upgrade;
         
-        # Satisfy Hermes strict internal host and origin validation
         proxy_set_header Host 127.0.0.1:$HERMES_DASHBOARD_PORT;
         proxy_set_header Origin http://127.0.0.1:$HERMES_DASHBOARD_PORT;
         
@@ -303,9 +301,9 @@ nginx -t
 systemctl reload nginx
 
 # ------------------------------------------------------------------------------
-# 7. Systemd Service Deployment & Final Validation
+# 7. Systemd Service Deployment & Restart
 # ------------------------------------------------------------------------------
-echo "===> [7/7] Configuring systemd service for Hermes Unified Dashboard..."
+echo "===> [7/7] Configuring and restarting systemd service for Hermes Unified Dashboard..."
 cat <<EOF > /etc/systemd/system/hermes-dashboard.service
 [Unit]
 Description=Hermes Agent Unified Web Dashboard Service
@@ -328,7 +326,8 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now hermes-dashboard.service
+systemctl enable hermes-dashboard.service
+systemctl restart hermes-dashboard.service
 
 if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
     ufw allow 80/tcp comment "HTTP (Redirect to HTTPS)"
