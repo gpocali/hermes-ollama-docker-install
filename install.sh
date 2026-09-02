@@ -13,14 +13,15 @@
 # 3. Ollama Backend (Port 11434): Bound to 0.0.0.0 with open CORS (*) for LAN clients.
 # 4. Hermes Unified Dashboard (Port 9119): Proxied securely via Nginx over HTTPS, 
 #    complete with dynamic WebSocket mapping and Host/Origin header overrides.
-# 5. Native Custom Provider & Egress Config: Configures custom Ollama provider, 
-#    disables proxy blockages (`proxy.enabled: false`), and pre-initializes the 
-#    skills hub so agent capabilities work out of the box.
+# 5. Native Custom Provider, Egress & Browser Container: Configures custom 
+#    Ollama provider, disables proxy blockages (`proxy.enabled: false`), pre-initializes 
+#    skills hub, and builds a local Docker image (`hermes-browser-env`) with 
+#    Chromium, Xvfb, and Xauth for sandboxed browser tool execution.
 # ==============================================================================
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.4"
+INSTALLER_VERSION="2.6"
 STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
@@ -91,12 +92,12 @@ fi
 mkdir -p "$HERMES_HOME" "$OLLAMA_MODELS_DIR" "$DOCKER_DATA_DIR" "$CERT_DIR"
 
 # ------------------------------------------------------------------------------
-# 3. System Dependencies & Nginx Setup
+# 3. System Dependencies, Browser Docker Image & Nginx Setup
 # ------------------------------------------------------------------------------
-echo "===> [3/7] Installing system tools, Nginx, and Docker engine..."
+echo "===> [3/7] Installing system tools, Nginx, Docker engine, and building browser container..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl wget git jq ufw apt-transport-https ca-certificates gnupg lsb-release pipx openssl nginx
+apt-get install -y curl wget git jq ufw apt-transport-https ca-certificates gnupg lsb-release pipx openssl nginx chromium xvfb xauth
 
 if ! command -v docker &> /dev/null; then
     echo "Installing Docker Engine for sandboxed agent execution..."
@@ -116,6 +117,22 @@ systemctl enable --now docker
 if [[ -n "${SUDO_USER:-}" ]]; then
     usermod -aG docker "$SUDO_USER"
 fi
+
+# Build local sandboxed browser container for Hermes browser skills
+BUILD_DIR="$STORAGE_ROOT/docker/browser-build"
+mkdir -p "$BUILD_DIR"
+cat <<EOF > "$BUILD_DIR/Dockerfile"
+FROM ubuntu:26.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get install -y chromium chromium-plugin xvfb xauth libgtk-3-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+CMD ["/usr/bin/xvfb-run", "/usr/bin/chromium-browser", "--no-sandbox"]
+EOF
+
+echo "Building local Docker image 'hermes-browser-env'..."
+docker build -t hermes-browser-env "$BUILD_DIR"
 
 # ------------------------------------------------------------------------------
 # 4. Local Ollama Backend Configuration (Network Accessible)
@@ -186,6 +203,7 @@ web:
   backend: ddgs
 browser:
   cloud_provider: local
+  image: hermes-browser-env
 display:
   tool_progress: all
 computer_use:
@@ -278,9 +296,11 @@ server {
         proxy_pass http://hermes_dashboard;
         proxy_http_version 1.1;
         
+        # Dynamic WebSocket support for live chat streaming
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \$connection_upgrade;
         
+        # Satisfy Hermes strict internal host and origin validation
         proxy_set_header Host 127.0.0.1:$HERMES_DASHBOARD_PORT;
         proxy_set_header Origin http://127.0.0.1:$HERMES_DASHBOARD_PORT;
         
@@ -346,6 +366,7 @@ echo " Storage Path Map       : $STORAGE_ROOT"
 echo " Config Persistence     : $CONFIG_FILE"
 echo " Allowed Domains/IPs    : $SERVER_DOMAINS"
 echo " SSL Certificate Path   : $CERT_DIR/server.crt"
+echo " Browser Container Image: hermes-browser-env (Local Docker)"
 echo " Ollama API (LAN)       : http://$PRIMARY_IP:$OLLAMA_PORT"
 echo " Hermes Dashboard (LAN) : https://$PRIMARY_NAME or https://$PRIMARY_IP"
 echo "------------------------------------------------------------------------"
