@@ -6,10 +6,10 @@
 # 
 # ARCHITECTURE & PERSISTENCE OVERVIEW:
 # 1. Auto-Discovery & Persistence: Automatically discovers the machine hostname 
-#    and all active network adapter IPs on first run. Saves them to 
-#    /storage/installer.conf so user edits persist across script re-runs.
+#    and active network IPs on first run. Saves them to /storage/installer.conf 
+#    and supports legacy configuration keys for backward compatibility.
 # 2. Self-Signed SSL (Multi-SAN): Generates a 10-year self-signed certificate 
-#    containing all discovered hostnames and IPs as Subject Alternative Names.
+#    containing all configured domains and IPs as Subject Alternative Names.
 # 3. Ollama Backend (Port 11434): Bound to 0.0.0.0 with open CORS (*) for LAN clients.
 # 4. Hermes Unified Dashboard (Port 9119): Proxied securely via Nginx over HTTPS, 
 #    complete with dynamic WebSocket upgrade mapping and Host-header rewriting.
@@ -39,7 +39,7 @@ if ! grep -qEi "ubuntu" /etc/os-release; then
 fi
 
 # ------------------------------------------------------------------------------
-# Config Persistence & Auto-Discovery Logic
+# Config Persistence & Auto-Discovery Logic (With Legacy Fallback)
 # ------------------------------------------------------------------------------
 SYSTEM_HOSTNAME="$(hostname -f 2>/dev/null || hostname)"
 SYSTEM_IPS="$(hostname -I | xargs)"
@@ -48,6 +48,12 @@ DEFAULT_DOMAINS="$SYSTEM_HOSTNAME $SYSTEM_IPS"
 if [[ -f "$CONFIG_FILE" ]]; then
     echo "===> Loading existing configuration from $CONFIG_FILE..."
     source "$CONFIG_FILE"
+    
+    # Backward compatibility: if installer.conf used the old 'DOMAIN_NAME' key, map it over
+    if [[ -z "${SERVER_DOMAINS:-}" ]] && [[ -n "${DOMAIN_NAME:-}" ]]; then
+        SERVER_DOMAINS="$DOMAIN_NAME"
+    fi
+
     if [[ -z "${SERVER_DOMAINS:-}" ]]; then
         SERVER_DOMAINS="$DEFAULT_DOMAINS"
     fi
