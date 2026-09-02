@@ -13,11 +13,13 @@
 # 3. Ollama Backend (Port 11434): Bound to 0.0.0.0 with open CORS (*) for LAN clients.
 # 4. Hermes Unified Dashboard (Port 9119): Proxied securely via Nginx over HTTPS, 
 #    complete with dynamic WebSocket mapping and Host/Origin header overrides.
+# 5. Native Custom Provider Config: Seeds Hermes configuration with the validated 
+#    custom local provider map targeting Ollama, avoiding MOA aggregator faults.
 # ==============================================================================
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.1"
+INSTALLER_VERSION="2.2"
 STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
@@ -151,7 +153,7 @@ echo "Pulling foundation model ($DEFAULT_GEMMA_MODEL)..."
 ollama pull "$DEFAULT_GEMMA_MODEL"
 
 # ------------------------------------------------------------------------------
-# 5. Hermes Agent Core & Unified Config (Fully Local MoA & Model Binding)
+# 5. Hermes Agent Core & Native Custom Provider Config
 # ------------------------------------------------------------------------------
 echo "===> [5/7] Installing Hermes Agent and writing routing config..."
 export HERMES_CONFIG_DIR="$HERMES_HOME/config"
@@ -169,35 +171,33 @@ if ! command -v hermes &> /dev/null; then
 fi
 
 cat <<EOF > "$HERMES_CONFIG_DIR/config.yaml"
-version: "1.0"
-backend: local
-default_provider: ollama
 model:
-  provider: ollama
-  model: "$DEFAULT_GEMMA_MODEL"
-models:
   default: "$DEFAULT_GEMMA_MODEL"
-  providers:
-    ollama:
-      base_url: "http://127.0.0.1:$OLLAMA_PORT/v1"
-      model: "$DEFAULT_GEMMA_MODEL"
-ollama:
+  provider: custom
   base_url: "http://127.0.0.1:$OLLAMA_PORT/v1"
-  default_model: "$DEFAULT_GEMMA_MODEL"
-moa:
-  default_preset: local
-  presets:
-    local:
-      reference_models:
-        - provider: ollama
-          model: "$DEFAULT_GEMMA_MODEL"
-      aggregator:
-        provider: ollama
-        model: "$DEFAULT_GEMMA_MODEL"
+  api_key: \${HERMES_CUSTOM_127_0_0_1_11434_API_KEY}
+agent:
+  max_turns: 150
 terminal:
   backend: docker
-workspaces:
-  root_dir: "$STORAGE_ROOT/workspaces"
+web:
+  backend: ddgs
+browser:
+  cloud_provider: local
+display:
+  tool_progress: all
+computer_use:
+  backend: cua
+proxy:
+  enabled: true
+_config_version: 39
+session_reset:
+  mode: none
+custom_providers:
+  - name: "Local (127.0.0.1:$OLLAMA_PORT)"
+    base_url: "http://127.0.0.1:$OLLAMA_PORT/v1"
+    key_env: "HERMES_CUSTOM_127_0_0_1_11434_API_KEY"
+    model: "$DEFAULT_GEMMA_MODEL"
 dashboard:
   host: "127.0.0.1"
   port: $HERMES_DASHBOARD_PORT
@@ -311,8 +311,7 @@ Type=simple
 User=root
 Environment="HOME=$STORAGE_ROOT"
 Environment="HERMES_CONFIG_DIR=$HERMES_CONFIG_DIR"
-Environment="HERMES_PROVIDER=ollama"
-Environment="HERMES_MODEL=$DEFAULT_GEMMA_MODEL"
+Environment="HERMES_CUSTOM_127_0_0_1_11434_API_KEY=ollama"
 Environment="OPENAI_API_BASE=http://127.0.0.1:$OLLAMA_PORT/v1"
 ExecStart=/usr/local/bin/hermes dashboard --host 127.0.0.1 --port $HERMES_DASHBOARD_PORT --no-open
 Restart=always
