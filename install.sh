@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.6"
+INSTALLER_VERSION="2.7"
 STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
@@ -118,14 +118,14 @@ if [[ -n "${SUDO_USER:-}" ]]; then
     usermod -aG docker "$SUDO_USER"
 fi
 
-# Build local sandboxed browser container for Hermes browser skills
+# Build local sandboxed browser container for Hermes browser skills (without missing plugin)
 BUILD_DIR="$STORAGE_ROOT/docker/browser-build"
 mkdir -p "$BUILD_DIR"
 cat <<EOF > "$BUILD_DIR/Dockerfile"
 FROM ubuntu:26.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
-    apt-get install -y chromium chromium-plugin xvfb xauth libgtk-3-dev && \
+    apt-get install -y chromium xvfb xauth libgtk-3-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 CMD ["/usr/bin/xvfb-run", "/usr/bin/chromium-browser", "--no-sandbox"]
