@@ -12,7 +12,7 @@
 #    containing all configured domains and IPs as Subject Alternative Names.
 # 3. Ollama Backend (Port 11434): Bound to 0.0.0.0 with open CORS (*) for LAN clients.
 # 4. Hermes Unified Dashboard (Port 9119): Proxied securely via Nginx over HTTPS, 
-#    complete with dynamic WebSocket upgrade mapping and Host-header rewriting.
+#    complete with dynamic WebSocket mapping and Host/Origin header overrides.
 # ==============================================================================
 
 set -euo pipefail
@@ -49,7 +49,6 @@ if [[ -f "$CONFIG_FILE" ]]; then
     echo "===> Loading existing configuration from $CONFIG_FILE..."
     source "$CONFIG_FILE"
     
-    # Backward compatibility: if installer.conf used the old 'DOMAIN_NAME' key, map it over
     if [[ -z "${SERVER_DOMAINS:-}" ]] && [[ -n "${DOMAIN_NAME:-}" ]]; then
         SERVER_DOMAINS="$DOMAIN_NAME"
     fi
@@ -197,7 +196,7 @@ if systemctl is-active --quiet hermes-agent.service 2>/dev/null || systemctl is-
 fi
 
 # ------------------------------------------------------------------------------
-# 6. Dynamic Multi-SAN SSL Certificate Generation & Nginx Setup (with WebSockets)
+# 6. Dynamic Multi-SAN SSL Certificate Generation & Nginx Setup
 # ------------------------------------------------------------------------------
 echo "===> [6/7] Generating multi-SAN SSL certificates and configuring Nginx..."
 
@@ -263,8 +262,9 @@ server {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \$connection_upgrade;
         
-        # Satisfy Hermes strict internal host-header validation
+        # Satisfy Hermes strict internal host and origin validation
         proxy_set_header Host 127.0.0.1:$HERMES_DASHBOARD_PORT;
+        proxy_set_header Origin http://127.0.0.1:$HERMES_DASHBOARD_PORT;
         
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
