@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.0"
+INSTALLER_VERSION="2.1"
 STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
@@ -151,7 +151,7 @@ echo "Pulling foundation model ($DEFAULT_GEMMA_MODEL)..."
 ollama pull "$DEFAULT_GEMMA_MODEL"
 
 # ------------------------------------------------------------------------------
-# 5. Hermes Agent Core & Unified Config
+# 5. Hermes Agent Core & Unified Config (Fully Local MoA & Model Binding)
 # ------------------------------------------------------------------------------
 echo "===> [5/7] Installing Hermes Agent and writing routing config..."
 export HERMES_CONFIG_DIR="$HERMES_HOME/config"
@@ -172,6 +172,9 @@ cat <<EOF > "$HERMES_CONFIG_DIR/config.yaml"
 version: "1.0"
 backend: local
 default_provider: ollama
+model:
+  provider: ollama
+  model: "$DEFAULT_GEMMA_MODEL"
 models:
   default: "$DEFAULT_GEMMA_MODEL"
   providers:
@@ -181,6 +184,16 @@ models:
 ollama:
   base_url: "http://127.0.0.1:$OLLAMA_PORT/v1"
   default_model: "$DEFAULT_GEMMA_MODEL"
+moa:
+  default_preset: local
+  presets:
+    local:
+      reference_models:
+        - provider: ollama
+          model: "$DEFAULT_GEMMA_MODEL"
+      aggregator:
+        provider: ollama
+        model: "$DEFAULT_GEMMA_MODEL"
 terminal:
   backend: docker
 workspaces:
