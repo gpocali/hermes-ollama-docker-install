@@ -5,13 +5,14 @@
 # ==============================================================================
 # 
 # ARCHITECTURE & PERSISTENCE OVERVIEW:
-# 1. Config Persistence: Saves user input (domain/IP) to /storage/installer.conf 
-#    so subsequent runs skip prompts automatically.
-# 2. Self-Signed SSL: Generates a 10-year self-signed certificate stored at 
-#    /storage/certs/ for local LAN HTTPS access without requiring Let's Encrypt.
+# 1. Auto-Discovery & Persistence: Automatically discovers the machine hostname 
+#    and all active network adapter IPs on first run. Saves them to 
+#    /storage/installer.conf so user edits persist across script re-runs.
+# 2. Self-Signed SSL (Multi-SAN): Generates a 10-year self-signed certificate 
+#    containing all discovered hostnames and IPs as Subject Alternative Names.
 # 3. Ollama Backend (Port 11434): Bound to 0.0.0.0 with open CORS (*) for LAN clients.
-# 4. Hermes Unified Dashboard (Port 9119): Serves the agent core, APIs, and Web UI 
-#    under a single process proxied securely via Nginx over HTTPS.
+# 4. Hermes Unified Dashboard (Port 9119): Proxied securely via Nginx over HTTPS, 
+#    with Host-header rewriting to satisfy internal security checks.
 # ==============================================================================
 
 set -euo pipefail
@@ -26,7 +27,6 @@ CONFIG_FILE="${STORAGE_ROOT}/installer.conf"
 DEFAULT_GEMMA_MODEL="gemma4:latest"
 OLLAMA_PORT=11434
 HERMES_DASHBOARD_PORT=9119
-DOMAIN_NAME=""
 
 echo "===> [1/7] Verifying system privileges and checking configuration state..."
 if [[ $EUID -ne 0 ]]; then
@@ -38,34 +38,37 @@ if ! grep -qEi "ubuntu" /etc/os-release; then
     echo "Warning: This environment is not Ubuntu. Some package paths may vary."
 fi
 
-# Load previous configuration if it exists and sanitize it
+# ------------------------------------------------------------------------------
+# Config Persistence & Auto-Discovery Logic
+# ------------------------------------------------------------------------------
+SYSTEM_HOSTNAME="$(hostname -f 2>/dev/null || hostname)"
+SYSTEM_IPS="$(hostname -I | xargs)"
+DEFAULT_DOMAINS="$SYSTEM_HOSTNAME $SYSTEM_IPS"
+
 if [[ -f "$CONFIG_FILE" ]]; then
     echo "===> Loading existing configuration from $CONFIG_FILE..."
     source "$CONFIG_FILE"
-    if [[ "$DOMAIN_NAME" == \#* ]] || [[ "$DOMAIN_NAME" == *\[* ]] || [[ ${#DOMAIN_NAME} -gt 64 ]]; then
-        DOMAIN_NAME=""
+    # Fallback if SERVER_DOMAINS was left blank
+    if [[ -z "${SERVER_DOMAINS:-}" ]]; then
+        SERVER_DOMAINS="$DEFAULT_DOMAINS"
     fi
-fi
-
-# Fallback to system hostname if no valid config exists
-if [[ -z "$DOMAIN_NAME" ]]; then
-    SYSTEM_HOSTNAME="$(hostname -f 2>/dev/null || hostname)"
-    read -p "Enter local domain/IP for dashboard [Default: $SYSTEM_HOSTNAME]: " USER_INPUT
-    USER_INPUT=$(echo "$USER_INPUT" | tr -d '\r' | xargs)
-    
-    if [[ -z "$USER_INPUT" ]]; then
-        DOMAIN_NAME="$SYSTEM_HOSTNAME"
-        echo "No input provided. Using system hostname: $DOMAIN_NAME"
-    else
-        DOMAIN_NAME="$USER_INPUT"
-    fi
-
-    mkdir -p "$STORAGE_ROOT"
-    echo "DOMAIN_NAME=\"$DOMAIN_NAME\"" > "$CONFIG_FILE"
-    echo "Saved configuration to $CONFIG_FILE"
 else
-    echo "Using configured Domain/IP: $DOMAIN_NAME"
+    SERVER_DOMAINS="$DEFAULT_DOMAINS"
+    mkdir -p "$STORAGE_ROOT"
+    cat <<EOF > "$CONFIG_FILE"
+# ==============================================================================
+# Hermes Server Configuration File
+# ==============================================================================
+# SERVER_DOMAINS controls which hostnames and IPs are valid for Nginx server_name
+# and included in the SSL certificate SANs. You can safely modify this list 
+# manually; your changes will be preserved across script re-runs.
+# ==============================================================================
+SERVER_DOMAINS="$SERVER_DOMAINS"
+EOF
+    echo "Created persistent configuration at $CONFIG_FILE"
 fi
+
+echo "Active Server Domains/IPs for Dashboard: $SERVER_DOMAINS"
 
 # ------------------------------------------------------------------------------
 # 2. Storage Infrastructure Setup
@@ -182,7 +185,6 @@ dashboard:
   port: $HERMES_DASHBOARD_PORT
 EOF
 
-# Stop and remove legacy headless serve service if present
 if systemctl is-active --quiet hermes-agent.service 2>/dev/null || systemctl is-enabled --quiet hermes-agent.service 2>/dev/null; then
     systemctl stop hermes-agent.service || true
     systemctl disable hermes-agent.service || true
@@ -190,21 +192,33 @@ if systemctl is-active --quiet hermes-agent.service 2>/dev/null || systemctl is-
 fi
 
 # ------------------------------------------------------------------------------
-# 6. Self-Signed SSL Certificate Generation & Nginx Reverse Proxy Setup
+# 6. Dynamic Multi-SAN SSL Certificate Generation & Nginx Setup
 # ------------------------------------------------------------------------------
-echo "===> [6/7] Generating self-signed SSL certificates and configuring Nginx..."
+echo "===> [6/7] Generating multi-SAN SSL certificates and configuring Nginx..."
+
+# Dynamically construct OpenSSL SAN extensions from SERVER_DOMAINS
+SAN_EXT="subjectAltName=DNS:localhost,IP:127.0.0.1"
+for entry in $SERVER_DOMAINS; do
+    if [[ "$entry" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$entry" =~ : ]]; then
+        SAN_EXT="${SAN_EXT},IP:$entry"
+    else
+        SAN_EXT="${SAN_EXT},DNS:$entry"
+    fi
+done
+
+PRIMARY_NAME="$(echo "$SERVER_DOMAINS" | awk '{print $1}')"
 
 if [[ ! -f "$CERT_DIR/server.crt" ]] || [[ ! -f "$CERT_DIR/server.key" ]]; then
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
         -keyout "$CERT_DIR/server.key" \
         -out "$CERT_DIR/server.crt" \
-        -subj "/CN=$DOMAIN_NAME/O=HermesLocal/C=US" \
-        -addext "subjectAltName=DNS:$DOMAIN_NAME,IP:$DOMAIN_NAME" 2>/dev/null || \
+        -subj "/CN=$PRIMARY_NAME/O=HermesLocal/C=US" \
+        -addext "$SAN_EXT" 2>/dev/null || \
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
         -keyout "$CERT_DIR/server.key" \
         -out "$CERT_DIR/server.crt" \
-        -subj "/CN=$DOMAIN_NAME/O=HermesLocal/C=US"
-    echo "Self-signed SSL certificate generated successfully."
+        -subj "/CN=$PRIMARY_NAME/O=HermesLocal/C=US"
+    echo "Multi-SAN self-signed SSL certificate generated successfully."
 else
     echo "Existing SSL certificates found in $CERT_DIR. Skipping generation."
 fi
@@ -218,14 +232,14 @@ upstream hermes_dashboard {
 server {
     listen 80;
     listen [::]:80;
-    server_name $DOMAIN_NAME;
+    server_name $SERVER_DOMAINS localhost 127.0.0.1;
     return 301 https://\$host\$request_uri;
 }
 
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
-    server_name $DOMAIN_NAME;
+    server_name $SERVER_DOMAINS localhost 127.0.0.1;
 
     ssl_certificate $CERT_DIR/server.crt;
     ssl_certificate_key $CERT_DIR/server.key;
@@ -239,7 +253,9 @@ server {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         
-        proxy_set_header Host \$host;
+        # Satisfy Hermes strict internal host-header validation
+        proxy_set_header Host 127.0.0.1:$HERMES_DASHBOARD_PORT;
+        
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -292,20 +308,19 @@ if command -v ufw &> /dev/null && ufw status | grep -q "Status: active"; then
     ufw reload
 fi
 
-SERVER_IP="$(hostname -I | awk '{print $1}')"
+PRIMARY_IP="$(echo "$SYSTEM_IPS" | awk '{print $1}')"
 
 echo "========================================================================"
 echo "                   INSTALLATION COMPLETE SUCCESSFULLY!                  "
 echo "========================================================================"
 echo " Storage Path Map       : $STORAGE_ROOT"
 echo " Config Persistence     : $CONFIG_FILE"
+echo " Allowed Domains/IPs    : $SERVER_DOMAINS"
 echo " SSL Certificate Path   : $CERT_DIR/server.crt"
-echo " SSL Private Key Path   : $CERT_DIR/server.key"
-echo " Ollama API (LAN)       : http://$SERVER_IP:$OLLAMA_PORT"
-echo " Hermes Dashboard (LAN) : https://$DOMAIN_NAME (or https://$SERVER_IP)"
+echo " Ollama API (LAN)       : http://$PRIMARY_IP:$OLLAMA_PORT"
+echo " Hermes Dashboard (LAN) : https://$PRIMARY_NAME or https://$PRIMARY_IP"
 echo "------------------------------------------------------------------------"
-echo " NOTE ON SELF-SIGNED CERTIFICATES:"
-echo " Your browser will show a security warning because the SSL certificate is"
-echo " self-signed. You can safely bypass this warning, or replace 'server.crt'"
-echo " and 'server.key' in $CERT_DIR with your own custom/enterprise certificates."
+echo " CONFIGURATION NOTE:"
+echo " You can edit '$CONFIG_FILE' at any time to add custom DNS names"
+echo " or additional IPs. Re-running this script will preserve your customizations."
 echo "========================================================================"
