@@ -17,6 +17,7 @@
 
 set -euo pipefail
 
+INSTALLER_VERSION="2.0"
 STORAGE_ROOT="/storage"
 HERMES_HOME="${STORAGE_ROOT}/hermes"
 OLLAMA_MODELS_DIR="${STORAGE_ROOT}/ollama/models"
@@ -28,7 +29,7 @@ DEFAULT_GEMMA_MODEL="gemma4:latest"
 OLLAMA_PORT=11434
 HERMES_DASHBOARD_PORT=9119
 
-echo "===> [1/7] Verifying system privileges and checking configuration state..."
+echo "===> [1/7] Verifying system privileges and checking configuration state (v$INSTALLER_VERSION)..."
 if [[ $EUID -ne 0 ]]; then
    echo "Error: This script must be run with root privileges (e.g., sudo bash install.sh)" >&2
    exit 1
@@ -323,6 +324,7 @@ PRIMARY_IP="$(echo "$SYSTEM_IPS" | awk '{print $1}')"
 echo "========================================================================"
 echo "                   INSTALLATION COMPLETE SUCCESSFULLY!                  "
 echo "========================================================================"
+echo " Installer Version      : v$INSTALLER_VERSION"
 echo " Storage Path Map       : $STORAGE_ROOT"
 echo " Config Persistence     : $CONFIG_FILE"
 echo " Allowed Domains/IPs    : $SERVER_DOMAINS"
